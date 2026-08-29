@@ -66,13 +66,54 @@ export default function App() {
   const handleOpenDmByUserId = (userId: string): boolean => {
     if (!dataIndex) return false;
     const found = dataIndex.direct_messages.find(
-      dm => dm.recipient_id === userId || (dm.recipients?.includes(userId) ?? false)
+      dm =>
+        dm.recipient_id === userId ||
+        (dm.recipients?.includes(userId) ?? false) ||
+        dm.id === userId ||
+        dm.folder_name.replace(/^c/, '') === userId ||
+        dm.folder_names?.some(f => f.replace(/^c/, '') === userId)
     );
     if (found) {
       setSelectedServer('dms');
       setSelectedChannel(found);
       return true;
     }
+    return false;
+  };
+
+  const handleOpenChannelById = (channelId: string): boolean => {
+    if (!dataIndex) return false;
+
+    const dm = dataIndex.direct_messages.find(
+      entry =>
+        entry.id === channelId ||
+        entry.folder_name === channelId ||
+        entry.folder_name.replace(/^c/, '') === channelId ||
+        entry.folder_names?.some(f => f === channelId || f.replace(/^c/, '') === channelId) ||
+        entry.recipient_id === channelId ||
+        (entry.recipients?.includes(channelId) ?? false)
+    );
+    if (dm) {
+      setSelectedServer('dms');
+      setSelectedChannel(dm);
+      return true;
+    }
+
+    for (const server of dataIndex.servers) {
+      const found = server.channels.find(
+        entry =>
+          entry.id === channelId ||
+          entry.folder_name === channelId ||
+          entry.folder_name.replace(/^c/, '') === channelId ||
+          entry.folder_names?.some(f => f === channelId || f.replace(/^c/, '') === channelId)
+      );
+      if (found) {
+        setSelectedServer(server.id);
+        setSelectedChannel(found);
+        return true;
+      }
+    }
+
     return false;
   };
 
@@ -117,6 +158,7 @@ export default function App() {
           dataPath={dataPath}
           userMap={dataIndex.user_map}
           onOpenDmByUserId={handleOpenDmByUserId}
+          onOpenChannelById={handleOpenChannelById}
         />
       </div>
 

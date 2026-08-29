@@ -63,7 +63,10 @@ interface MessageItemProps {
   userMap: Record<string, string>;
   onImageClick?: (url: string) => void;
   onContextMenu?: (e: React.MouseEvent, message: Message) => void;
+  onMentionClick?: (userId: string, username?: string) => void;
   onMentionContextMenu?: (e: React.MouseEvent, userId: string, username?: string) => void;
+  onChannelClick?: (channelId: string) => void;
+  onChannelContextMenu?: (e: React.MouseEvent, channelId: string, channelName?: string) => void;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -74,7 +77,10 @@ export const MessageItem = memo(function MessageItem({
   userMap,
   onImageClick,
   onContextMenu,
+  onMentionClick,
   onMentionContextMenu,
+  onChannelClick,
+  onChannelContextMenu,
 }: MessageItemProps) {
   const getAuthorColor = (name: string) => {
     let hash = 0;
@@ -123,10 +129,38 @@ export const MessageItem = memo(function MessageItem({
   const renderFormattedText = (rawText: string) => {
     if (!rawText) return null;
 
-    const tokenRegex = /(<@!?\d+>|<#\d+>|<@&\d+>|<t:\d+(?::[a-zA-Z])?>)/g;
+    const tokenRegex = /(https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/\d+|<@!?\d+>|<#\d+>|<@&\d+>|<t:\d+(?::[a-zA-Z])?>)/g;
     const parts = rawText.split(tokenRegex);
 
     return parts.map((part, index) => {
+      const discordUrlMatch = part.match(/^https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/(\d+)$/);
+      if (discordUrlMatch) {
+        const channelId = discordUrlMatch[1];
+        const chName = userMap[channelId];
+        const handleClick = (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onChannelClick?.(channelId);
+        };
+        const openMenu = (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onChannelContextMenu?.(e, channelId, chName);
+        };
+
+        return (
+          <span
+            key={index}
+            className={MENTION_PILL}
+            title={`Channel ID: ${channelId}`}
+            onClick={handleClick}
+            onContextMenu={openMenu}
+          >
+            #{chName || channelId}
+          </span>
+        );
+      }
+
       const userMatch = part.match(/^<@!?(\d+)>$/);
       if (userMatch) {
         const id = userMatch[1];
@@ -136,18 +170,30 @@ export const MessageItem = memo(function MessageItem({
           e.stopPropagation();
           onMentionContextMenu?.(e, id, resolvedName);
         };
+        const handleUserClick = (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onMentionClick?.(id, resolvedName);
+        };
 
         return resolvedName ? (
           <span
             key={index}
             className={MENTION_PILL}
             title={`User ID: ${id}`}
+            onClick={handleUserClick}
             onContextMenu={openMentionMenu}
           >
             @{resolvedName}
           </span>
         ) : (
-          <span key={index} className="cursor-pointer hover:underline" onContextMenu={openMentionMenu}>
+          <span
+            key={index}
+            className="cursor-pointer hover:underline text-dc-text-link"
+            title={`User ID: ${id}`}
+            onClick={handleUserClick}
+            onContextMenu={openMentionMenu}
+          >
             {part}
           </span>
         );
@@ -157,12 +203,37 @@ export const MessageItem = memo(function MessageItem({
       if (channelMatch) {
         const id = channelMatch[1];
         const chName = userMap[id];
+        const handleChanClick = (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onChannelClick?.(id);
+        };
+        const openChanMenu = (e: React.MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onChannelContextMenu?.(e, id, chName);
+        };
+
         return chName ? (
-          <span key={index} className={MENTION_PILL} title={`Channel ID: ${id}`}>
+          <span
+            key={index}
+            className={MENTION_PILL}
+            title={`Channel ID: ${id}`}
+            onClick={handleChanClick}
+            onContextMenu={openChanMenu}
+          >
             #{chName}
           </span>
         ) : (
-          <span key={index}>{part}</span>
+          <span
+            key={index}
+            className="cursor-pointer hover:underline text-dc-text-link"
+            title={`Channel ID: ${id}`}
+            onClick={handleChanClick}
+            onContextMenu={openChanMenu}
+          >
+            {part}
+          </span>
         );
       }
 
@@ -202,36 +273,35 @@ export const MessageItem = memo(function MessageItem({
 
   const authorColor = getAuthorColor(message.author);
 
-  const hasContents = message.contents.trim().length > 0;
-  const hasAttachments = message.attachments.length > 0;
-  const hasStickers = message.stickers.length > 0;
-  const hasEmbeds = message.embeds.length > 0;
-  const isCall = message.message_type === 'CALL' || message.call_info !== null;
+  const hasContents = Boolean(message.contents && message.contents.trim().length > 0);
+  const hasAttachments = Boolean(message.attachments && message.attachments.length > 0);
+  const hasStickers = Boolean(message.stickers && message.stickers.length > 0);
+  const hasEmbeds = Boolean(message.embeds && message.embeds.length > 0);
+  const isCall = message.message_type === 'CALL' || Boolean(message.call_info);
   const isPin = message.message_type === 'PIN_ADD';
-  const isEmpty = !hasContents && !hasAttachments && !hasStickers && !hasEmbeds && !isCall && !isPin;
-
-  const openMessageMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    onContextMenu?.(e, message);
-  };
+  const isEmpty =
+    !hasContents && !hasAttachments && !hasStickers && !hasEmbeds && !isCall && !isPin;
 
   return (
     <div
       id={`msg-${message.id}`}
-      className={`hover:bg-dc-hover group px-4 py-0.5 ${showHeader ? 'pt-4' : ''} flex relative transition-colors ${
+      className={`hover:bg-dc-hover group px-4 py-0.5 ${showHeader ? 'mt-4' : ''} flex relative transition-colors ${
         isCurrentMatch ? 'bg-dc-accent/20 ring-1 ring-dc-accent/60 rounded' : ''
       }`}
     >
       {showHeader ? (
         <div
-          className="w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center text-white font-medium mr-4 mt-0.5 overflow-hidden cursor-pointer"
+          className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-white font-medium mr-4 mt-0.5 overflow-hidden cursor-pointer"
           style={{ backgroundColor: authorColor }}
-          onContextMenu={openMessageMenu}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            onContextMenu?.(e, message);
+          }}
         >
           {message.author.charAt(0).toUpperCase()}
         </div>
       ) : (
-        <div className="w-14 flex-shrink-0 text-right pr-4 opacity-0 group-hover:opacity-100 text-[10px] text-dc-text-muted self-start mt-[3px]">
+        <div className="w-14 shrink-0 text-right pr-4 opacity-0 group-hover:opacity-100 text-[10px] text-dc-text-muted self-start mt-[3px]">
           {formatTimeHover(message.timestamp)}
         </div>
       )}
@@ -242,7 +312,10 @@ export const MessageItem = memo(function MessageItem({
             <span
               className="font-medium mr-2 hover:underline cursor-pointer"
               style={{ color: authorColor }}
-              onContextMenu={openMessageMenu}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                onContextMenu?.(e, message);
+              }}
             >
               {message.author}
             </span>
@@ -336,7 +409,7 @@ export const MessageItem = memo(function MessageItem({
 
         {hasEmbeds && (
           <div className="mt-2 flex flex-col gap-2">
-            {message.embeds.map((embed, i) => {
+            {message.embeds!.map((embed, i) => {
               const hasEmbedMedia = embed.image_url || embed.thumbnail_url;
               const hasEmbedText = embed.title || embed.description || embed.provider_name;
 
@@ -407,7 +480,7 @@ export const MessageItem = memo(function MessageItem({
 
         {hasStickers && (
           <div className="mt-2 flex flex-col gap-2">
-            {message.stickers.map((sticker, i) => {
+            {message.stickers!.map((sticker, i) => {
               const name = sticker.name || sticker.id || 'Sticker';
               return (
                 <div key={sticker.id || i} className="inline-block">

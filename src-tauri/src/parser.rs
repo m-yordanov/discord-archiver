@@ -454,6 +454,13 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
         if is_placeholder_name(&dm.name) {
             continue;
         }
+        user_map.insert(dm.id.clone(), dm.name.clone());
+        user_map.insert(dm.folder_name.clone(), dm.name.clone());
+        user_map.insert(dm.folder_name.trim_start_matches('c').to_string(), dm.name.clone());
+        for fn_item in &dm.folder_names {
+            user_map.insert(fn_item.clone(), dm.name.clone());
+            user_map.insert(fn_item.trim_start_matches('c').to_string(), dm.name.clone());
+        }
         let ids = dm
             .recipient_id
             .iter()
@@ -470,8 +477,13 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
     }
     servers.sort_by(|a, b| a.name.cmp(&b.name));
 
-    for channel in servers.iter().flat_map(|s| &s.channels) {
-        user_map.insert(channel.id.clone(), channel.name.clone());
+    for server in &servers {
+        user_map.insert(server.id.clone(), server.name.clone());
+        for channel in &server.channels {
+            user_map.insert(channel.id.clone(), channel.name.clone());
+            user_map.insert(channel.folder_name.clone(), channel.name.clone());
+            user_map.insert(channel.folder_name.trim_start_matches('c').to_string(), channel.name.clone());
+        }
     }
 
     Ok(DataIndex {

@@ -25,9 +25,16 @@ interface ChatViewProps {
   dataPath: string | null;
   userMap: Record<string, string>;
   onOpenDmByUserId?: (userId: string) => boolean;
+  onOpenChannelById?: (channelId: string) => boolean;
 }
 
-export function ChatView({ selectedChannel, dataPath, userMap, onOpenDmByUserId }: ChatViewProps) {
+export function ChatView({
+  selectedChannel,
+  dataPath,
+  userMap,
+  onOpenDmByUserId,
+  onOpenChannelById,
+}: ChatViewProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -206,6 +213,36 @@ export function ChatView({ selectedChannel, dataPath, userMap, onOpenDmByUserId 
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   }, [onOpenDmByUserId, showToast]);
 
+  const handleMentionClick = useCallback((userId: string) => {
+    const found = onOpenDmByUserId?.(userId);
+    if (!found) showToast('No DM found for this user');
+  }, [onOpenDmByUserId, showToast]);
+
+  const handleChannelClick = useCallback((channelId: string) => {
+    const found = onOpenChannelById?.(channelId);
+    if (!found) showToast('Channel not found in this archive');
+  }, [onOpenChannelById, showToast]);
+
+  const handleChannelContextMenu = useCallback((e: React.MouseEvent, channelId: string, channelName?: string) => {
+    const items: ContextMenuItem[] = [
+      { label: 'Copy Channel ID', value: channelId, badge: 'ID' },
+    ];
+
+    if (channelName) {
+      items.push({ label: 'Copy Channel Name', value: channelName });
+    }
+
+    items.push({
+      label: 'Open Channel',
+      onClick: () => {
+        const found = onOpenChannelById?.(channelId);
+        if (!found) showToast('Channel not found in this archive');
+      },
+    });
+
+    setContextMenu({ x: e.clientX, y: e.clientY, items });
+  }, [onOpenChannelById, showToast]);
+
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -370,7 +407,10 @@ export function ChatView({ selectedChannel, dataPath, userMap, onOpenDmByUserId 
                       userMap={userMap}
                       onImageClick={setSelectedImage}
                       onContextMenu={handleMessageContextMenu}
+                      onMentionClick={handleMentionClick}
                       onMentionContextMenu={handleMentionContextMenu}
+                      onChannelClick={handleChannelClick}
+                      onChannelContextMenu={handleChannelContextMenu}
                     />
                   </div>
                 );
