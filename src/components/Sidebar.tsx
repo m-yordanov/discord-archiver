@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageCircle, Plus } from 'lucide-react';
+import { MessageCircle, Plus, Search } from 'lucide-react';
 import { DataIndex, ChannelInfo } from '../types';
 import { ContextMenu, ContextMenuItem } from './ContextMenu';
 
@@ -13,6 +13,7 @@ interface SidebarProps {
   onSelectChannel: (channel: ChannelInfo) => void;
   onOpenFolder: () => void;
   onOpenZip: () => void;
+  onOpenSearch: () => void;
 }
 
 export function Sidebar({
@@ -23,6 +24,7 @@ export function Sidebar({
   onSelectChannel,
   onOpenFolder,
   onOpenZip,
+  onOpenSearch,
 }: SidebarProps) {
   const [dmSortMode, setDmSortMode] = useState<DmSortMode>('most_messages');
   const [contextMenu, setContextMenu] = useState<{
@@ -113,6 +115,16 @@ export function Sidebar({
     <div className="flex h-full select-none">
       <div className="w-[72px] bg-dc-dark flex flex-col items-center py-3 gap-2 overflow-y-auto">
         <button
+          title="Search Conversations (Ctrl+K)"
+          onClick={onOpenSearch}
+          className="w-12 h-12 flex shrink-0 items-center justify-center text-white bg-dc-darkest hover:bg-dc-accent rounded-full hover:rounded-2xl transition-all duration-200 cursor-pointer group"
+        >
+          <Search size={22} />
+        </button>
+
+        <div className="w-8 h-[2px] bg-dc-divider my-1 rounded-full shrink-0" />
+
+        <button
           title="Direct Messages"
           onClick={() => onSelectServer('dms')}
           className={`w-12 h-12 flex shrink-0 items-center justify-center text-white rounded-full transition-all duration-200 cursor-pointer ${
@@ -155,20 +167,31 @@ export function Sidebar({
 
       <div className="w-[240px] bg-dc-darker flex flex-col">
         <div className="h-12 flex items-center justify-between px-3 font-bold text-white shadow-sm shrink-0 border-b border-dc-dark gap-2">
-          <span className="truncate text-sm">{title}</span>
-          {isDMs && (
-            <select
-              value={dmSortMode}
-              onChange={(e) => setDmSortMode(e.target.value as DmSortMode)}
-              className="text-[10px] bg-dc-dark text-dc-text-muted hover:text-white px-1.5 py-0.5 rounded border border-dc-input/60 cursor-pointer outline-none transition-colors shrink-0 font-normal"
-              title="Sort Direct Messages"
+          <div className="flex items-center gap-2 truncate">
+            <span className="truncate text-sm">{title}</span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              title="Search Conversations (Ctrl+K)"
+              onClick={onOpenSearch}
+              className="p-1 text-dc-text-muted hover:text-white hover:bg-dc-dark rounded cursor-pointer transition-colors"
             >
-              <option value="most_messages">Most Messages</option>
-              <option value="last_message">Last Message Sent</option>
-              <option value="first_message">First Message Sent</option>
-              <option value="alphabetical">Alphabetical</option>
-            </select>
-          )}
+              <Search size={15} />
+            </button>
+            {isDMs && (
+              <select
+                value={dmSortMode}
+                onChange={(e) => setDmSortMode(e.target.value as DmSortMode)}
+                className="text-[10px] bg-dc-dark text-dc-text-muted hover:text-white px-1.5 py-0.5 rounded border border-dc-input/60 cursor-pointer outline-none transition-colors shrink-0 font-normal"
+                title="Sort Direct Messages"
+              >
+                <option value="most_messages">Most Messages</option>
+                <option value="last_message">Last Message Sent</option>
+                <option value="first_message">First Message Sent</option>
+                <option value="alphabetical">Alphabetical</option>
+              </select>
+            )}
+          </div>
         </div>
         
         <div className="flex-1 overflow-y-auto py-2 px-2">

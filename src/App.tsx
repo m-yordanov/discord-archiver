@@ -6,6 +6,7 @@ import { DataIndex, ChannelInfo } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
+import { ConversationSearchModal } from './components/ConversationSearchModal';
 
 export default function App() {
   const [dataIndex, setDataIndex] = useState<DataIndex | null>(null);
@@ -15,6 +16,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   const loadData = useCallback(async (path: string) => {
     setLoading(true);
@@ -49,6 +51,20 @@ export default function App() {
       unlisten.then((stop) => stop());
     };
   }, [loadData]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        if (dataIndex) {
+          setIsSearchOpen(prev => !prev);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [dataIndex]);
 
   const handleOpenFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -152,6 +168,7 @@ export default function App() {
           onSelectChannel={setSelectedChannel}
           onOpenFolder={handleOpenFolder}
           onOpenZip={handleOpenZip}
+          onOpenSearch={() => setIsSearchOpen(true)}
         />
         <ChatView
           selectedChannel={selectedChannel}
@@ -161,6 +178,20 @@ export default function App() {
           onOpenChannelById={handleOpenChannelById}
         />
       </div>
+
+      <ConversationSearchModal
+        isOpen={isSearchOpen}
+        onClose={() => setIsSearchOpen(false)}
+        dataIndex={dataIndex}
+        onSelectDm={(channel) => {
+          setSelectedServer('dms');
+          setSelectedChannel(channel);
+        }}
+        onSelectServerChannel={(serverId, channel) => {
+          setSelectedServer(serverId);
+          setSelectedChannel(channel);
+        }}
+      />
 
       {loading && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center bg-dc-darkest/80 text-dc-text">
