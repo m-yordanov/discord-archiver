@@ -6,6 +6,10 @@ import { DataIndex, ChannelInfo } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
+import { StatsView } from './components/StatsView';
+import { ChannelStats, PackageStats } from './stats';
+
+type View = 'messages' | 'stats';
 
 export default function App() {
   const [dataIndex, setDataIndex] = useState<DataIndex | null>(null);
@@ -15,6 +19,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [view, setView] = useState<View>('messages');
+  const [stats, setStats] = useState<PackageStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   const loadData = useCallback(async (path: string) => {
     setLoading(true);
@@ -25,6 +33,9 @@ export default function App() {
       setDataIndex(index);
       setSelectedServer('dms');
       setSelectedChannel(null);
+      setView('messages');
+      setStats(null);
+      setStatsError(null);
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Could not read that data package.');
     } finally {
@@ -50,6 +61,25 @@ export default function App() {
     };
   }, [loadData]);
 
+  useEffect(() => {
+    if (view !== 'stats' || stats || statsLoading || !dataPath) return;
+
+    const loadStats = async () => {
+      setStatsLoading(true);
+      setStatsError(null);
+      try {
+        const result: PackageStats = await invoke('get_stats', { path: dataPath });
+        setStats(result);
+      } catch (e) {
+        setStatsError(typeof e === 'string' ? e : 'Could not read statistics.');
+      } finally {
+        setStatsLoading(false);
+      }
+    };
+
+    loadStats();
+  }, [view, stats, statsLoading, dataPath]);
+
   const handleOpenFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
     if (typeof selected === 'string') await loadData(selected);
@@ -74,6 +104,33 @@ export default function App() {
       return true;
     }
     return false;
+  };
+
+  const handleOpenChannelFromStats = (channel: ChannelStats) => {
+    if (!dataIndex) return;
+
+    const dm = dataIndex.direct_messages.find(entry => entry.id === channel.id);
+    if (dm) {
+      setView('messages');
+      setSelectedServer('dms');
+      setSelectedChannel(dm);
+      return;
+    }
+
+    for (const server of dataIndex.servers) {
+      const found = server.channels.find(entry => entry.id === channel.id);
+      if (found) {
+        setView('messages');
+        setSelectedServer(server.id);
+        setSelectedChannel(found);
+        return;
+      }
+    }
+  };
+
+  const handleSelectServer = (serverId: string) => {
+    setView('messages');
+    setSelectedServer(serverId);
   };
 
   const dropOverlay = isDragging && (
@@ -107,17 +164,28 @@ export default function App() {
           dataIndex={dataIndex}
           selectedServer={selectedServer}
           selectedChannel={selectedChannel}
-          onSelectServer={setSelectedServer}
+          onSelectServer={handleSelectServer}
           onSelectChannel={setSelectedChannel}
           onOpenFolder={handleOpenFolder}
           onOpenZip={handleOpenZip}
+          view={view}
+          onSelectView={setView}
         />
-        <ChatView
-          selectedChannel={selectedChannel}
-          dataPath={dataPath}
-          userMap={dataIndex.user_map}
-          onOpenDmByUserId={handleOpenDmByUserId}
-        />
+        {view === 'stats' ? (
+          <StatsView
+            stats={stats}
+            loading={statsLoading}
+            error={statsError}
+            onOpenChannel={handleOpenChannelFromStats}
+          />
+        ) : (
+          <ChatView
+            selectedChannel={selectedChannel}
+            dataPath={dataPath}
+            userMap={dataIndex.user_map}
+            onOpenDmByUserId={handleOpenDmByUserId}
+          />
+        )}
       </div>
 
       {loading && (

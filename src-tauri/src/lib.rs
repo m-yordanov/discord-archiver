@@ -1,6 +1,7 @@
 mod archive;
 mod models;
 mod parser;
+mod stats;
 mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -13,7 +14,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::load_data_package,
             commands::get_messages,
-            commands::get_raw_message
+            commands::get_raw_message,
+            commands::get_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
