@@ -136,7 +136,6 @@ pub struct ChannelInfo {
     pub guild_id: Option<String>,
     pub recipients: Option<Vec<String>>,
     pub recipient_id: Option<String>,
-    pub folder_name: String,
     pub folder_names: Vec<String>,
     pub first_message_timestamp: Option<String>,
     pub last_message_timestamp: Option<String>,

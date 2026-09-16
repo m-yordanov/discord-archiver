@@ -74,7 +74,7 @@ export function ChatView({
       try {
         const response: { messages: Message[]; total: number } = await invoke('get_messages', {
           dataPath,
-          folderName: selectedChannel.folder_name,
+          folderNames: selectedChannel.folder_names,
           page: 0,
           pageSize: 0,
         });
@@ -179,7 +179,7 @@ export function ChatView({
           try {
             const json: string = await invoke('get_raw_message', {
               dataPath,
-              folderName: selectedChannel.folder_name,
+              folderNames: selectedChannel.folder_names,
               messageId: message.id,
             });
             setRawJson(json);

@@ -7,11 +7,11 @@ pub fn load_data_package(path: String) -> Result<DataIndex, String> {
 }
 
 #[tauri::command]
-pub fn get_messages(data_path: String, folder_name: String, page: usize, page_size: usize) -> Result<MessagesResponse, String> {
-    parser::load_messages(&data_path, &folder_name, page, page_size)
+pub fn get_messages(data_path: String, folder_names: Vec<String>, page: usize, page_size: usize) -> Result<MessagesResponse, String> {
+    parser::load_messages(&data_path, &folder_names, page, page_size)
 }
 
 #[tauri::command]
-pub fn get_raw_message(data_path: String, folder_name: String, message_id: String) -> Result<String, String> {
-    parser::load_raw_message(&data_path, &folder_name, &message_id)
+pub fn get_raw_message(data_path: String, folder_names: Vec<String>, message_id: String) -> Result<String, String> {
+    parser::load_raw_message(&data_path, &folder_names, &message_id)
 }

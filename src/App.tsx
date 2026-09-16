@@ -79,15 +79,19 @@ export default function App() {
     if (typeof selected === 'string') await loadData(selected);
   };
 
+  const canonicalId = (id: string) => id.replace(/^c/, '');
+
   const handleOpenDmByUserId = (userId: string): boolean => {
     if (!dataIndex) return false;
+    const target = canonicalId(userId);
     const found = dataIndex.direct_messages.find(
       dm =>
         dm.recipient_id === userId ||
-        (dm.recipients?.includes(userId) ?? false) ||
+        canonicalId(dm.recipient_id || '') === target ||
+        (dm.recipients?.some(r => r === userId || canonicalId(r) === target) ?? false) ||
         dm.id === userId ||
-        dm.folder_name.replace(/^c/, '') === userId ||
-        dm.folder_names?.some(f => f.replace(/^c/, '') === userId)
+        canonicalId(dm.id) === target ||
+        dm.folder_names.some(f => f === userId || canonicalId(f) === target)
     );
     if (found) {
       setSelectedServer('dms');
@@ -99,15 +103,16 @@ export default function App() {
 
   const handleOpenChannelById = (channelId: string): boolean => {
     if (!dataIndex) return false;
+    const target = canonicalId(channelId);
 
     const dm = dataIndex.direct_messages.find(
       entry =>
         entry.id === channelId ||
-        entry.folder_name === channelId ||
-        entry.folder_name.replace(/^c/, '') === channelId ||
-        entry.folder_names?.some(f => f === channelId || f.replace(/^c/, '') === channelId) ||
+        canonicalId(entry.id) === target ||
+        entry.folder_names.some(f => f === channelId || canonicalId(f) === target) ||
         entry.recipient_id === channelId ||
-        (entry.recipients?.includes(channelId) ?? false)
+        canonicalId(entry.recipient_id || '') === target ||
+        (entry.recipients?.some(r => r === channelId || canonicalId(r) === target) ?? false)
     );
     if (dm) {
       setSelectedServer('dms');
@@ -119,9 +124,8 @@ export default function App() {
       const found = server.channels.find(
         entry =>
           entry.id === channelId ||
-          entry.folder_name === channelId ||
-          entry.folder_name.replace(/^c/, '') === channelId ||
-          entry.folder_names?.some(f => f === channelId || f.replace(/^c/, '') === channelId)
+          canonicalId(entry.id) === target ||
+          entry.folder_names.some(f => f === channelId || canonicalId(f) === target)
       );
       if (found) {
         setSelectedServer(server.id);

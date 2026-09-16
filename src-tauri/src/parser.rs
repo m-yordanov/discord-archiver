@@ -286,13 +286,17 @@ fn max_opt(a: Option<String>, b: Option<String>) -> Option<String> {
     }
 }
 
+fn canonical_channel_id(folder: &str) -> &str {
+    folder.strip_prefix('c').unwrap_or(folder)
+}
+
 fn merge_duplicate_dms(dms: Vec<ChannelInfo>) -> Vec<ChannelInfo> {
     let mut merged: HashMap<String, ChannelInfo> = HashMap::new();
 
     for dm in dms {
         let key = match (dm.channel_type.as_str(), dm.recipient_id.as_deref()) {
             ("DM", Some(rid)) if !rid.is_empty() => format!("dm_{}", rid),
-            _ => dm.folder_name.clone(),
+            _ => dm.folder_names.first().cloned().unwrap_or_default(),
         };
 
         match merged.get_mut(&key) {
@@ -306,7 +310,6 @@ fn merge_duplicate_dms(dms: Vec<ChannelInfo>) -> Vec<ChannelInfo> {
                         existing.folder_names.push(folder.clone());
                     }
                 }
-                existing.folder_name = existing.folder_names.join(",");
 
                 existing.first_message_timestamp = min_opt(
                     existing.first_message_timestamp.take(),
@@ -368,7 +371,7 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
         let name = match channel_type.as_str() {
             "DM" | "GROUP_DM" => display_names
                 .get(&folder_name)
-                .or_else(|| display_names.get(folder_name.trim_start_matches('c')))
+                .or_else(|| display_names.get(canonical_channel_id(&folder_name)))
                 .or_else(|| display_names.get(&meta.id))
                 .map(|dn| {
                     dn.strip_prefix("Direct Message with ")
@@ -385,14 +388,17 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
         };
 
         let channel_info = ChannelInfo {
-            id: meta.id.clone(),
+            id: if meta.id.is_empty() {
+                canonical_channel_id(&folder_name).to_string()
+            } else {
+                meta.id.clone()
+            },
             name,
             channel_type: channel_type.clone(),
             message_count,
             guild_id: meta.guild.as_ref().map(|g| g.id.clone()),
             recipients: Some(recipient_ids),
             recipient_id: None,
-            folder_name: folder_name.clone(),
             folder_names: vec![folder_name],
             first_message_timestamp,
             last_message_timestamp,
@@ -446,7 +452,7 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
             .strip_prefix("Direct Message with ")
             .unwrap_or(display)
             .to_string();
-        user_map.insert(folder.trim_start_matches('c').to_string(), cleaned.clone());
+        user_map.insert(canonical_channel_id(folder).to_string(), cleaned.clone());
         user_map.insert(folder.clone(), cleaned);
     }
 
@@ -455,11 +461,9 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
             continue;
         }
         user_map.insert(dm.id.clone(), dm.name.clone());
-        user_map.insert(dm.folder_name.clone(), dm.name.clone());
-        user_map.insert(dm.folder_name.trim_start_matches('c').to_string(), dm.name.clone());
-        for fn_item in &dm.folder_names {
-            user_map.insert(fn_item.clone(), dm.name.clone());
-            user_map.insert(fn_item.trim_start_matches('c').to_string(), dm.name.clone());
+        for folder in &dm.folder_names {
+            user_map.insert(folder.clone(), dm.name.clone());
+            user_map.insert(canonical_channel_id(folder).to_string(), dm.name.clone());
         }
         let ids = dm
             .recipient_id
@@ -481,8 +485,10 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
         user_map.insert(server.id.clone(), server.name.clone());
         for channel in &server.channels {
             user_map.insert(channel.id.clone(), channel.name.clone());
-            user_map.insert(channel.folder_name.clone(), channel.name.clone());
-            user_map.insert(channel.folder_name.trim_start_matches('c').to_string(), channel.name.clone());
+            for folder in &channel.folder_names {
+                user_map.insert(folder.clone(), channel.name.clone());
+                user_map.insert(canonical_channel_id(folder).to_string(), channel.name.clone());
+            }
         }
     }
 
@@ -545,12 +551,12 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
 
 pub fn load_raw_message(
     data_path: &str,
-    folder_name: &str,
+    folder_names: &[String],
     message_id: &str,
 ) -> Result<String, String> {
     let mut package = Package::open(data_path)?;
 
-    for folder in folder_name.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+    for folder in folder_names {
         let Some(text) = package.source.read_channel(folder, "messages.json") else {
             continue;
         };
@@ -570,23 +576,16 @@ pub fn load_raw_message(
 
 pub fn load_messages(
     data_path: &str,
-    folder_name: &str,
+    folder_names: &[String],
     page: usize,
     page_size: usize,
 ) -> Result<MessagesResponse, String> {
     let mut package = Package::open(data_path)?;
     let default_user_id = package.account().map(|a| a.id_string());
 
-    let folders: Vec<String> = folder_name
-        .split(',')
-        .map(str::trim)
-        .filter(|f| !f.is_empty())
-        .map(str::to_string)
-        .collect();
-
     let mut raw_msgs: Vec<RawMessage> = Vec::new();
-    for folder in folders {
-        let Some(text) = package.source.read_channel(&folder, "messages.json") else {
+    for folder in folder_names {
+        let Some(text) = package.source.read_channel(folder, "messages.json") else {
             continue;
         };
         if let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(&text) {
@@ -766,7 +765,7 @@ mod tests {
             Some("2022-01-08T10:05:00.000+00:00")
         );
 
-        let res = load_messages(&fixture(), &riley.folder_name, 0, 0).expect("merged messages");
+        let res = load_messages(&fixture(), &riley.folder_names, 0, 0).expect("merged messages");
         let ids: Vec<&str> = res.messages.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["r1", "r2", "r3"]);
     }
@@ -782,7 +781,7 @@ mod tests {
     #[test]
     fn messages_are_sorted_even_when_the_file_is_not() {
         let idx = index();
-        let res = load_messages(&fixture(), &alice(&idx).folder_name, 0, 0).expect("messages");
+        let res = load_messages(&fixture(), &alice(&idx).folder_names, 0, 0).expect("messages");
 
         assert_eq!(res.total, res.messages.len());
         let ids: Vec<&str> = res.messages.iter().map(|m| m.id.as_str()).collect();
@@ -792,10 +791,10 @@ mod tests {
     #[test]
     fn paging_returns_a_window_but_reports_the_full_total() {
         let idx = index();
-        let folder = &alice(&idx).folder_name;
+        let folders = &alice(&idx).folder_names;
 
-        let all = load_messages(&fixture(), folder, 0, 0).unwrap();
-        let page = load_messages(&fixture(), folder, 1, 2).unwrap();
+        let all = load_messages(&fixture(), folders, 0, 0).unwrap();
+        let page = load_messages(&fixture(), folders, 1, 2).unwrap();
 
         assert_eq!(page.total, all.total);
         assert_eq!(page.messages.len(), 2);
@@ -805,11 +804,11 @@ mod tests {
     #[test]
     fn raw_message_is_fetched_by_id() {
         let idx = index();
-        let raw = load_raw_message(&fixture(), &alice(&idx).folder_name, "m4").expect("raw json");
+        let raw = load_raw_message(&fixture(), &alice(&idx).folder_names, "m4").expect("raw json");
         assert!(raw.contains("\"m4\""));
         assert!(raw.contains("meme.png"));
 
-        assert!(load_raw_message(&fixture(), &alice(&idx).folder_name, "nope").is_err());
+        assert!(load_raw_message(&fixture(), &alice(&idx).folder_names, "nope").is_err());
     }
 
     fn zip_fixture(dest: &Path) {
@@ -853,7 +852,7 @@ mod tests {
 
         let msgs = load_messages(
             &zip_path.to_string_lossy(),
-            &alice(&from_zip).folder_name,
+            &alice(&from_zip).folder_names,
             0,
             0,
         )

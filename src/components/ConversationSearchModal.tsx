@@ -51,7 +51,7 @@ export function ConversationSearchModal({
 
     for (const dm of dataIndex.direct_messages) {
       items.push({
-        id: `dm-${dm.id || dm.folder_name}`,
+        id: `dm-${dm.id || dm.folder_names[0] || 'dm'}`,
         type: 'dm',
         name: dm.name || 'Direct Message',
         channel: dm,
@@ -97,7 +97,7 @@ export function ConversationSearchModal({
         const serverMatch = item.serverName?.toLowerCase().includes(q);
         const recipientMatch = item.recipientId?.toLowerCase().includes(q);
         const idMatch = item.channel.id.toLowerCase().includes(q);
-        const folderMatch = item.channel.folder_name.toLowerCase().includes(q);
+        const folderMatch = item.channel.folder_names.some(f => f.toLowerCase().includes(q));
         return nameMatch || serverMatch || recipientMatch || idMatch || folderMatch;
       })
       .sort((a, b) => {

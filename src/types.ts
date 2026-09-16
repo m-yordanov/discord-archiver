@@ -12,7 +12,6 @@ export interface ChannelInfo {
   guild_id: string | null;
   recipients: string[] | null;
   recipient_id: string | null;
-  folder_name: string;
   folder_names: string[];
   first_message_timestamp: string | null;
   last_message_timestamp: string | null;
