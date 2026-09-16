@@ -1,5 +1,6 @@
 use crate::archive;
 use crate::models::*;
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 
 const GUILD_CHANNEL_TYPES: [&str; 4] = [
@@ -241,13 +242,19 @@ fn classify_message(
     }
 }
 
+#[derive(Deserialize)]
+struct RawMessageSummary<'a> {
+    #[serde(borrow, rename = "Timestamp", alias = "timestamp")]
+    timestamp: Option<&'a str>,
+}
+
 fn summarise_messages(text: &str) -> (usize, Option<String>, Option<String>) {
-    let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(text) else {
+    let Ok(msgs) = serde_json::from_str::<Vec<RawMessageSummary>>(text) else {
         return (0, None, None);
     };
 
-    let first = msgs.iter().map(|m| &m.timestamp).min().cloned();
-    let last = msgs.iter().map(|m| &m.timestamp).max().cloned();
+    let first = msgs.iter().filter_map(|m| m.timestamp).min().map(str::to_string);
+    let last = msgs.iter().filter_map(|m| m.timestamp).max().map(str::to_string);
     (msgs.len(), first, last)
 }
 
