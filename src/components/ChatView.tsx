@@ -10,6 +10,7 @@ import { SearchFilters } from './SearchFilters';
 import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
 
 const RESULTS_PANEL_LIMIT = 200;
+const PAGE_SIZE = 500;
 
 const shouldShowHeader = (currentMsg: Message, prevMsg: Message | null) => {
   if (!prevMsg) return true;
@@ -37,6 +38,9 @@ export function ChatView({
 }: ChatViewProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadedOffset, setLoadedOffset] = useState<number>(0);
+  const [, setTotalMessages] = useState<number>(0);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [rawJson, setRawJson] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -53,44 +57,101 @@ export function ChatView({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const shouldScrollToBottomRef = useRef(true);
 
   const showToast = useCallback((text: string) => {
     setToastMessage(text);
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
+  const hasMoreOlder = loadedOffset > 0;
+
   useEffect(() => {
     if (!selectedChannel || !dataPath) {
       setMessages([]);
+      setTotalMessages(0);
+      setLoadedOffset(0);
       setSearchQuery('');
       setFilters(EMPTY_FILTERS);
       setCurrentMatchIdx(0);
       return;
     }
 
-    const loadMessages = async () => {
+    shouldScrollToBottomRef.current = true;
+
+    const loadInitialMessages = async () => {
       setLoading(true);
       setLoadError(null);
       try {
         const response: { messages: Message[]; total: number } = await invoke('get_messages', {
           dataPath,
           folderNames: selectedChannel.folder_names,
+          limit: PAGE_SIZE,
+          offset: null,
           page: 0,
           pageSize: 0,
         });
 
         setMessages(response.messages);
+        setTotalMessages(response.total);
+        setLoadedOffset(Math.max(0, response.total - response.messages.length));
       } catch (e) {
         setMessages([]);
+        setTotalMessages(0);
+        setLoadedOffset(0);
         setLoadError(typeof e === 'string' ? e : 'Could not read this channel.');
       } finally {
         setLoading(false);
       }
     };
 
-    loadMessages();
+    loadInitialMessages();
     setFilters(EMPTY_FILTERS);
   }, [selectedChannel, dataPath]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlder || loading || !hasMoreOlder || !selectedChannel || !dataPath) return;
+
+    setLoadingOlder(true);
+    const fetchLimit = Math.min(PAGE_SIZE, loadedOffset);
+    const fetchOffset = loadedOffset - fetchLimit;
+
+    try {
+      const scrollEl = scrollRef.current;
+      const prevScrollHeight = scrollEl ? scrollEl.scrollHeight : 0;
+      const prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
+
+      const response: { messages: Message[]; total: number } = await invoke('get_messages', {
+        dataPath,
+        folderNames: selectedChannel.folder_names,
+        limit: fetchLimit,
+        offset: fetchOffset,
+      });
+
+      setMessages(prev => [...response.messages, ...prev]);
+      setLoadedOffset(fetchOffset);
+      setTotalMessages(response.total);
+
+      requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          const newScrollHeight = scrollRef.current.scrollHeight;
+          scrollRef.current.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+        }
+      });
+    } catch {
+      showToast('Could not load older messages');
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [loadingOlder, loading, hasMoreOlder, selectedChannel, dataPath, loadedOffset, showToast]);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.scrollTop < 120 && hasMoreOlder && !loadingOlder && !loading) {
+      loadOlderMessages();
+    }
+  }, [hasMoreOlder, loadingOlder, loading, loadOlderMessages]);
 
   const filteredMessages = useMemo(() => applyFilters(messages, filters), [messages, filters]);
   const activeFilterCount = countActiveFilters(filters);
@@ -105,7 +166,9 @@ export function ChatView({
 
   useEffect(() => {
     if (searchQuery || filteredMessages.length === 0) return;
+    if (!shouldScrollToBottomRef.current) return;
 
+    shouldScrollToBottomRef.current = false;
     const last = filteredMessages.length - 1;
     virtualizer.scrollToIndex(last, { align: 'end' });
     const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(last, { align: 'end' }));
@@ -277,7 +340,7 @@ export function ChatView({
           <div className="w-[1px] h-6 bg-dc-divider mr-4 shrink-0" />
           <span className="text-sm text-dc-text-muted shrink-0">
             {activeFilterCount > 0
-              ? `${filteredMessages.length.toLocaleString()} of ${messages.length.toLocaleString()} messages`
+              ? `${filteredMessages.length.toLocaleString()} of ${messages.length.toLocaleString()} loaded messages (${selectedChannel.message_count.toLocaleString()} total)`
               : `${selectedChannel.message_count.toLocaleString()} messages`}
           </span>
         </div>
@@ -359,7 +422,7 @@ export function ChatView({
       </div>
 
       <div className="flex-1 flex min-h-0 overflow-hidden relative">
-        <div className="flex-1 overflow-y-auto p-4" ref={scrollRef}>
+        <div className="flex-1 overflow-y-auto p-4" ref={scrollRef} onScroll={handleScroll}>
           {loading ? (
             <div className="flex items-center justify-center h-full text-dc-text-muted">
               Loading messages...
@@ -399,6 +462,35 @@ export function ChatView({
                     className="absolute left-0 top-0 w-full"
                     style={{ transform: `translateY(${item.start}px)` }}
                   >
+                    {item.index === 0 && (
+                      hasMoreOlder ? (
+                        <div className="flex justify-center pb-4">
+                          <button
+                            type="button"
+                            onClick={loadOlderMessages}
+                            disabled={loadingOlder}
+                            className="px-3 py-1.5 rounded text-xs bg-dc-dark hover:bg-dc-hover text-dc-text border border-dc-input/60 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {loadingOlder
+                              ? 'Loading older messages...'
+                              : `Load older messages (${loadedOffset.toLocaleString()} remaining)`}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="pt-4 pb-6 px-2 select-none">
+                          <div className="w-14 h-14 rounded-full bg-dc-input flex items-center justify-center text-2xl text-white mb-2">
+                            {prefix}
+                          </div>
+                          <h2 className="text-xl font-bold text-white mb-1">
+                            Welcome to {prefix}{selectedChannel.name || 'this channel'}!
+                          </h2>
+                          <p className="text-xs text-dc-text-muted">
+                            This is the start of the {prefix}{selectedChannel.name || 'conversation'} channel.
+                          </p>
+                          <div className="w-full h-[1px] bg-dc-divider mt-4" />
+                        </div>
+                      )
+                    )}
                     <MessageItem
                       message={msg}
                       showHeader={shouldShowHeader(msg, prevMsg)}
@@ -423,6 +515,16 @@ export function ChatView({
           <div className="w-72 bg-dc-dark border-l border-dc-divider flex flex-col shrink-0 select-none">
             <div className="h-10 px-3 flex items-center justify-between border-b border-dc-divider text-xs font-semibold text-white">
               <span>{matchingIndices.length} Results</span>
+              {hasMoreOlder && (
+                <button
+                  type="button"
+                  onClick={loadOlderMessages}
+                  disabled={loadingOlder}
+                  className="text-[11px] text-dc-text-link hover:underline cursor-pointer disabled:opacity-50"
+                >
+                  {loadingOlder ? 'Loading...' : '+ Load Older'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowResultsPanel(false)}

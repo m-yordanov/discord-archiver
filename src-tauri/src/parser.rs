@@ -93,14 +93,8 @@ fn parse_single_sticker(val: &serde_json::Value) -> Option<StickerItem> {
 
 fn extract_stickers(raw: &RawMessage) -> Vec<StickerItem> {
     let named = raw.stickers.iter().chain(raw.sticker_items.iter());
-    let discovered = raw
-        .extra
-        .iter()
-        .filter(|(k, _)| k.to_lowercase().contains("sticker"))
-        .map(|(_, v)| v);
 
     let mut items: Vec<StickerItem> = named
-        .chain(discovered)
         .flat_map(|val| match val {
             serde_json::Value::Array(arr) => arr.iter().filter_map(parse_single_sticker).collect(),
             other => parse_single_sticker(other).into_iter().collect::<Vec<_>>(),
@@ -124,14 +118,16 @@ fn nested_url(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Op
 }
 
 fn extract_embeds(raw: &RawMessage) -> Vec<EmbedItem> {
-    raw.extra
-        .iter()
-        .filter(|(k, _)| matches!(k.to_lowercase().as_str(), "embeds" | "embed"))
-        .flat_map(|(_, v)| match v {
-            serde_json::Value::Array(arr) => arr.clone(),
-            serde_json::Value::Object(_) => vec![v.clone()],
-            _ => Vec::new(),
-        })
+    let Some(val) = raw.embeds.as_ref() else {
+        return Vec::new();
+    };
+    let items = match val {
+        serde_json::Value::Array(arr) => arr.clone(),
+        serde_json::Value::Object(_) => vec![val.clone()],
+        _ => Vec::new(),
+    };
+    items
+        .into_iter()
         .filter_map(|item| match item {
             serde_json::Value::Object(map) => Some(EmbedItem {
                 title: map.get("title").and_then(|v| v.as_str()).map(str::to_string),
@@ -154,7 +150,7 @@ fn extract_embeds(raw: &RawMessage) -> Vec<EmbedItem> {
 }
 
 fn extract_call(raw: &RawMessage) -> Option<CallInfo> {
-    if let Some(serde_json::Value::Object(map)) = raw.extra.get("call") {
+    if let Some(serde_json::Value::Object(map)) = raw.call.as_ref() {
         let duration_seconds = map.get("duration").and_then(|v| v.as_u64());
         let participants = map
             .get("participants")
@@ -219,12 +215,11 @@ fn classify_message(
         }
     }
 
-    let flags = raw
-        .extra
-        .get("flags")
-        .or_else(|| raw.extra.get("Flags"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let flags = match &raw.flags {
+        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+        Some(serde_json::Value::String(s)) => s.parse::<u64>().unwrap_or(0),
+        _ => 0,
+    };
     if flags & 8192 != 0 {
         return "VOICE_MESSAGE".to_string();
     }
@@ -339,7 +334,7 @@ fn merge_duplicate_dms(dms: Vec<ChannelInfo>) -> Vec<ChannelInfo> {
     result
 }
 
-pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
+pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), String> {
     let mut package = Package::open(path)?;
 
     let display_names = Package::parse_index(package.source.read_messages_index());
@@ -499,13 +494,21 @@ pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
         }
     }
 
-    Ok(DataIndex {
-        servers,
-        direct_messages,
-        username,
-        user_id,
-        user_map,
-    })
+    Ok((
+        DataIndex {
+            servers,
+            direct_messages,
+            username,
+            user_id,
+            user_map,
+        },
+        package.source,
+    ))
+}
+
+#[allow(dead_code)]
+pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
+    parse_package_source(path).map(|(idx, _)| idx)
 }
 
 fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
@@ -534,12 +537,11 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
     );
 
     let author_id = raw
-        .extra
-        .get("author")
+        .author
+        .as_ref()
         .and_then(|v| v.get("id"))
-        .or_else(|| raw.extra.get("author_id"))
-        .or_else(|| raw.extra.get("user_id"))
         .and_then(id_to_string)
+        .or_else(|| raw.author_id.as_ref().and_then(id_to_string))
         .or_else(|| default_user_id.cloned());
 
     Message {
@@ -556,31 +558,142 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
     }
 }
 
-pub fn load_raw_message(
-    data_path: &str,
+pub fn load_raw_message_from_source(
+    source: &mut archive::Source,
     folder_names: &[String],
     message_id: &str,
 ) -> Result<String, String> {
-    let mut package = Package::open(data_path)?;
-
     for folder in folder_names {
-        let Some(text) = package.source.read_channel(folder, "messages.json") else {
+        let Some(text) = source.read_channel(folder, "messages.json") else {
             continue;
         };
-        let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(&text) else {
-            continue;
-        };
-        if let Some(found) = msgs
-            .iter()
-            .find(|m| id_to_string(&m.id).as_deref() == Some(message_id))
-        {
-            return Ok(found.to_pretty_json());
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+            let items: &[serde_json::Value] = match &val {
+                serde_json::Value::Array(arr) => arr.as_slice(),
+                other => std::slice::from_ref(other),
+            };
+            for item in items {
+                let id = item
+                    .get("ID")
+                    .or_else(|| item.get("id"))
+                    .and_then(id_to_string);
+                if id.as_deref() == Some(message_id) {
+                    return serde_json::to_string_pretty(item).map_err(|e| e.to_string());
+                }
+            }
         }
     }
 
     Err("Could not find that message in this channel.".to_string())
 }
 
+pub fn load_raw_message(
+    data_path: &str,
+    folder_names: &[String],
+    message_id: &str,
+) -> Result<String, String> {
+    let mut package = Package::open(data_path)?;
+    load_raw_message_from_source(&mut package.source, folder_names, message_id)
+}
+
+pub fn parse_channel_messages(
+    texts: &[String],
+    default_user_id: Option<&String>,
+) -> Vec<Message> {
+    let mut raw_msgs: Vec<RawMessage> = Vec::new();
+    for text in texts {
+        if let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(text) {
+            raw_msgs.extend(msgs);
+        }
+    }
+
+    raw_msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    raw_msgs
+        .into_iter()
+        .map(|r| to_message(r, default_user_id))
+        .collect()
+}
+
+pub fn slice_messages(
+    all_messages: &[Message],
+    offset: Option<usize>,
+    limit: Option<usize>,
+    page: usize,
+    page_size: usize,
+) -> MessagesResponse {
+    let total = all_messages.len();
+
+    let (skip, take) = match (offset, limit) {
+        (Some(off), Some(lim)) => (off.min(total), lim),
+        (Some(off), None) => (off.min(total), total.saturating_sub(off)),
+        (None, Some(lim)) => {
+            if lim == 0 || lim >= total {
+                (0, total)
+            } else {
+                (total.saturating_sub(lim), lim)
+            }
+        }
+        (None, None) => {
+            if page_size == 0 {
+                (0, total)
+            } else {
+                let s = page * page_size;
+                (s.min(total), page_size)
+            }
+        }
+    };
+
+    let messages = all_messages
+        .iter()
+        .skip(skip)
+        .take(take)
+        .cloned()
+        .collect();
+
+    MessagesResponse { messages, total }
+}
+
+pub fn read_channel_texts_from_source(
+    source: &mut archive::Source,
+    folder_names: &[String],
+) -> (Vec<String>, Option<String>) {
+    let default_user_id = source
+        .read_root(&["account", "Account", "ACCOUNT", ""], "user.json")
+        .and_then(|s| serde_json::from_str::<RawUserAccount>(&s).ok())
+        .map(|a| a.id_string());
+
+    let mut texts = Vec::with_capacity(folder_names.len());
+    for folder in folder_names {
+        if let Some(text) = source.read_channel(folder, "messages.json") {
+            texts.push(text);
+        }
+    }
+
+    (texts, default_user_id)
+}
+
+pub fn read_channel_texts_from_path(
+    data_path: &str,
+    folder_names: &[String],
+) -> Result<(Vec<String>, Option<String>), String> {
+    let mut package = Package::open(data_path)?;
+    Ok(read_channel_texts_from_source(&mut package.source, folder_names))
+}
+
+#[allow(dead_code)]
+pub fn load_messages_from_source(
+    source: &mut archive::Source,
+    folder_names: &[String],
+    page: usize,
+    page_size: usize,
+) -> Result<MessagesResponse, String> {
+    let (texts, default_user_id) = read_channel_texts_from_source(source, folder_names);
+    let all_messages = parse_channel_messages(&texts, default_user_id.as_ref());
+    Ok(slice_messages(&all_messages, None, None, page, page_size))
+}
+
+#[allow(dead_code)]
 pub fn load_messages(
     data_path: &str,
     folder_names: &[String],
@@ -588,32 +701,7 @@ pub fn load_messages(
     page_size: usize,
 ) -> Result<MessagesResponse, String> {
     let mut package = Package::open(data_path)?;
-    let default_user_id = package.account().map(|a| a.id_string());
-
-    let mut raw_msgs: Vec<RawMessage> = Vec::new();
-    for folder in folder_names {
-        let Some(text) = package.source.read_channel(folder, "messages.json") else {
-            continue;
-        };
-        if let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(&text) {
-            raw_msgs.extend(msgs);
-        }
-    }
-
-    raw_msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-    let total = raw_msgs.len();
-    let skip = if page_size == 0 { 0 } else { page * page_size };
-    let take = if page_size == 0 { total } else { page_size };
-
-    let messages = raw_msgs
-        .into_iter()
-        .skip(skip)
-        .take(take)
-        .map(|r| to_message(r, default_user_id.as_ref()))
-        .collect();
-
-    Ok(MessagesResponse { messages, total })
+    load_messages_from_source(&mut package.source, folder_names, page, page_size)
 }
 
 #[cfg(test)]
@@ -806,6 +894,26 @@ mod tests {
         assert_eq!(page.total, all.total);
         assert_eq!(page.messages.len(), 2);
         assert_eq!(page.messages[0].id, all.messages[2].id);
+    }
+
+    #[test]
+    fn window_slice_returns_latest_or_offset_window() {
+        let idx = index();
+        let folders = &alice(&idx).folder_names;
+        let (texts, default_user_id) = read_channel_texts_from_path(&fixture(), folders).unwrap();
+        let msgs = parse_channel_messages(&texts, default_user_id.as_ref());
+
+        let latest = slice_messages(&msgs, None, Some(2), 0, 0);
+        assert_eq!(latest.total, 5);
+        assert_eq!(latest.messages.len(), 2);
+        assert_eq!(latest.messages[0].id, "m4");
+        assert_eq!(latest.messages[1].id, "m5");
+
+        let older = slice_messages(&msgs, Some(1), Some(2), 0, 0);
+        assert_eq!(older.total, 5);
+        assert_eq!(older.messages.len(), 2);
+        assert_eq!(older.messages[0].id, "m2");
+        assert_eq!(older.messages[1].id, "m3");
     }
 
     #[test]

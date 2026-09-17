@@ -8,6 +8,7 @@ pub fn run() {
     archive::remove_legacy_cache();
 
     tauri::Builder::default()
+        .manage(commands::AppState::new())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
