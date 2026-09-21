@@ -1,6 +1,37 @@
 import { memo } from 'react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { Message } from '../types';
 import { isImage, isVideo } from '../attachments';
+
+function cleanUrl(url: string): { url: string; trailing: string } {
+  let trailing = '';
+  let cleaned = url;
+  while (cleaned.length > 0) {
+    const last = cleaned[cleaned.length - 1];
+    if ('.,:;!?\"\''.includes(last)) {
+      trailing = last + trailing;
+      cleaned = cleaned.slice(0, -1);
+    } else if (last === ')' && (cleaned.match(/\)/g) || []).length > (cleaned.match(/\(/g) || []).length) {
+      trailing = last + trailing;
+      cleaned = cleaned.slice(0, -1);
+    } else if (last === ']' && (cleaned.match(/\]/g) || []).length > (cleaned.match(/\[/g) || []).length) {
+      trailing = last + trailing;
+      cleaned = cleaned.slice(0, -1);
+    } else {
+      break;
+    }
+  }
+  return { url: cleaned, trailing };
+}
+
+const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
+  e.preventDefault();
+  e.stopPropagation();
+  openUrl(url).catch((err) => {
+    console.error('Failed to open link:', err);
+    window.open(url, '_blank');
+  });
+};
 
 const AUTHOR_COLORS = [
   '#ed4245', '#5865f2', '#3ba55c', '#faa61a',
@@ -67,6 +98,7 @@ interface MessageItemProps {
   onMentionContextMenu?: (e: React.MouseEvent, userId: string, username?: string) => void;
   onChannelClick?: (channelId: string) => void;
   onChannelContextMenu?: (e: React.MouseEvent, channelId: string, channelName?: string) => void;
+  onLinkContextMenu?: (e: React.MouseEvent, url: string) => void;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -81,6 +113,7 @@ export const MessageItem = memo(function MessageItem({
   onMentionContextMenu,
   onChannelClick,
   onChannelContextMenu,
+  onLinkContextMenu,
 }: MessageItemProps) {
   const getAuthorColor = (name: string) => {
     let hash = 0;
@@ -129,7 +162,7 @@ export const MessageItem = memo(function MessageItem({
   const renderFormattedText = (rawText: string) => {
     if (!rawText) return null;
 
-    const tokenRegex = /(https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/\d+|<@!?\d+>|<#\d+>|<@&\d+>|<t:\d+(?::[a-zA-Z])?>)/g;
+    const tokenRegex = /(https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/\d+|<@!?\d+>|<#\d+>|<@&\d+>|<t:\d+(?::[a-zA-Z])?>|https?:\/\/[^\s<]+)/g;
     const parts = rawText.split(tokenRegex);
 
     return parts.map((part, index) => {
@@ -247,6 +280,29 @@ export const MessageItem = memo(function MessageItem({
             title={d.toLocaleString()}
           >
             {d.toLocaleDateString()}
+          </span>
+        );
+      }
+
+      if (part.startsWith('http://') || part.startsWith('https://')) {
+        const { url, trailing } = cleanUrl(part);
+        return (
+          <span key={index}>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-dc-text-link hover:underline cursor-pointer break-all"
+              onClick={(e) => handleExternalUrlClick(e, url)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onLinkContextMenu?.(e, url);
+              }}
+            >
+              {highlightText(url)}
+            </a>
+            {trailing ? highlightText(trailing) : null}
           </span>
         );
       }
@@ -397,6 +453,12 @@ export const MessageItem = memo(function MessageItem({
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-dc-text-link hover:underline truncate block"
+                      onClick={(e) => handleExternalUrlClick(e, url)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onLinkContextMenu?.(e, url);
+                      }}
                     >
                       {url.split('/').pop() || 'Attachment'}
                     </a>
@@ -436,6 +498,12 @@ export const MessageItem = memo(function MessageItem({
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-dc-text-link hover:underline"
+                          onClick={(e) => handleExternalUrlClick(e, embed.url!)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onLinkContextMenu?.(e, embed.url!);
+                          }}
                         >
                           {renderFormattedText(embed.title)}
                         </a>

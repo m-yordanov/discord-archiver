@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { ChannelInfo, Message } from '../types';
 import { MessageItem } from './MessageItem';
 import { ImageModal } from './ImageModal';
@@ -306,6 +307,26 @@ export function ChatView({
     setContextMenu({ x: e.clientX, y: e.clientY, items });
   }, [onOpenChannelById, showToast]);
 
+  const handleLinkContextMenu = useCallback((e: React.MouseEvent, url: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const items: ContextMenuItem[] = [
+      { label: 'Copy Link', value: url },
+      {
+        label: 'Open Link in Browser',
+        onClick: () => {
+          openUrl(url).catch((err) => {
+            console.error('Failed to open link:', err);
+            window.open(url, '_blank');
+          });
+        },
+      },
+    ];
+
+    setContextMenu({ x: e.clientX, y: e.clientY, items });
+  }, []);
+
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -503,6 +524,7 @@ export function ChatView({
                       onMentionContextMenu={handleMentionContextMenu}
                       onChannelClick={handleChannelClick}
                       onChannelContextMenu={handleChannelContextMenu}
+                      onLinkContextMenu={handleLinkContextMenu}
                     />
                   </div>
                 );
