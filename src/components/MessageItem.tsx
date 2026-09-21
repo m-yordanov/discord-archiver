@@ -2,27 +2,7 @@ import { memo } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Message } from '../types';
 import { isImage, isVideo } from '../attachments';
-
-function cleanUrl(url: string): { url: string; trailing: string } {
-  let trailing = '';
-  let cleaned = url;
-  while (cleaned.length > 0) {
-    const last = cleaned[cleaned.length - 1];
-    if ('.,:;!?\"\''.includes(last)) {
-      trailing = last + trailing;
-      cleaned = cleaned.slice(0, -1);
-    } else if (last === ')' && (cleaned.match(/\)/g) || []).length > (cleaned.match(/\(/g) || []).length) {
-      trailing = last + trailing;
-      cleaned = cleaned.slice(0, -1);
-    } else if (last === ']' && (cleaned.match(/\]/g) || []).length > (cleaned.match(/\[/g) || []).length) {
-      trailing = last + trailing;
-      cleaned = cleaned.slice(0, -1);
-    } else {
-      break;
-    }
-  }
-  return { url: cleaned, trailing };
-}
+import { DiscordMarkdown } from './DiscordMarkdown';
 
 const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
   e.preventDefault();
@@ -37,10 +17,6 @@ const AUTHOR_COLORS = [
   '#ed4245', '#5865f2', '#3ba55c', '#faa61a',
   '#eb459e', '#9b59b6', '#1abc9c', '#e67e22',
 ];
-
-const MENTION_PILL =
-  'inline-flex items-center bg-dc-accent/20 hover:bg-dc-accent text-[#c9cdfb] hover:text-white ' +
-  'px-1.5 py-0.5 rounded font-medium cursor-pointer transition-colors text-[13px] align-baseline mx-0.5';
 
 interface ClickableImageProps {
   src: string;
@@ -142,173 +118,21 @@ export const MessageItem = memo(function MessageItem({
       hour12: true,
     });
 
-  const highlightText = (text: string) => {
-    if (!searchQuery || !searchQuery.trim()) {
-      return text;
-    }
-    const escaped = searchQuery.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
-    const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
-    return parts.map((part, i) =>
-      part.toLowerCase() === searchQuery.toLowerCase() ? (
-        <mark key={i} className="bg-yellow-500/40 text-yellow-100 rounded px-0.5 py-0 font-medium">
-          {part}
-        </mark>
-      ) : (
-        part
-      )
-    );
-  };
-
   const renderFormattedText = (rawText: string) => {
     if (!rawText) return null;
-
-    const tokenRegex = /(https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/\d+|<@!?\d+>|<#\d+>|<@&\d+>|<t:\d+(?::[a-zA-Z])?>|https?:\/\/[^\s<]+)/g;
-    const parts = rawText.split(tokenRegex);
-
-    return parts.map((part, index) => {
-      const discordUrlMatch = part.match(/^https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/(\d+)$/);
-      if (discordUrlMatch) {
-        const channelId = discordUrlMatch[1];
-        const chName = userMap[channelId];
-        const handleClick = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onChannelClick?.(channelId);
-        };
-        const openMenu = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onChannelContextMenu?.(e, channelId, chName);
-        };
-
-        return (
-          <span
-            key={index}
-            className={MENTION_PILL}
-            title={`Channel ID: ${channelId}`}
-            onClick={handleClick}
-            onContextMenu={openMenu}
-          >
-            #{chName || channelId}
-          </span>
-        );
-      }
-
-      const userMatch = part.match(/^<@!?(\d+)>$/);
-      if (userMatch) {
-        const id = userMatch[1];
-        const resolvedName = userMap[id];
-        const openMentionMenu = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onMentionContextMenu?.(e, id, resolvedName);
-        };
-        const handleUserClick = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onMentionClick?.(id, resolvedName);
-        };
-
-        return resolvedName ? (
-          <span
-            key={index}
-            className={MENTION_PILL}
-            title={`User ID: ${id}`}
-            onClick={handleUserClick}
-            onContextMenu={openMentionMenu}
-          >
-            @{resolvedName}
-          </span>
-        ) : (
-          <span
-            key={index}
-            className="cursor-pointer hover:underline text-dc-text-link"
-            title={`User ID: ${id}`}
-            onClick={handleUserClick}
-            onContextMenu={openMentionMenu}
-          >
-            {part}
-          </span>
-        );
-      }
-
-      const channelMatch = part.match(/^<#(\d+)>$/);
-      if (channelMatch) {
-        const id = channelMatch[1];
-        const chName = userMap[id];
-        const handleChanClick = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onChannelClick?.(id);
-        };
-        const openChanMenu = (e: React.MouseEvent) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onChannelContextMenu?.(e, id, chName);
-        };
-
-        return chName ? (
-          <span
-            key={index}
-            className={MENTION_PILL}
-            title={`Channel ID: ${id}`}
-            onClick={handleChanClick}
-            onContextMenu={openChanMenu}
-          >
-            #{chName}
-          </span>
-        ) : (
-          <span
-            key={index}
-            className="cursor-pointer hover:underline text-dc-text-link"
-            title={`Channel ID: ${id}`}
-            onClick={handleChanClick}
-            onContextMenu={openChanMenu}
-          >
-            {part}
-          </span>
-        );
-      }
-
-      const timeMatch = part.match(/^<t:(\d+)(?::([a-zA-Z]))?>$/);
-      if (timeMatch) {
-        const d = new Date(parseInt(timeMatch[1], 10) * 1000);
-        return (
-          <span
-            key={index}
-            className="bg-dc-input/60 px-1 py-0.5 rounded text-xs text-dc-text-muted hover:text-white transition-colors"
-            title={d.toLocaleString()}
-          >
-            {d.toLocaleDateString()}
-          </span>
-        );
-      }
-
-      if (part.startsWith('http://') || part.startsWith('https://')) {
-        const { url, trailing } = cleanUrl(part);
-        return (
-          <span key={index}>
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-dc-text-link hover:underline cursor-pointer break-all"
-              onClick={(e) => handleExternalUrlClick(e, url)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onLinkContextMenu?.(e, url);
-              }}
-            >
-              {highlightText(url)}
-            </a>
-            {trailing ? highlightText(trailing) : null}
-          </span>
-        );
-      }
-
-      return <span key={index}>{highlightText(part)}</span>;
-    });
+    return (
+      <DiscordMarkdown
+        content={rawText}
+        userMap={userMap}
+        searchQuery={searchQuery}
+        onMentionClick={onMentionClick}
+        onMentionContextMenu={onMentionContextMenu}
+        onChannelClick={onChannelClick}
+        onChannelContextMenu={onChannelContextMenu}
+        onLinkContextMenu={onLinkContextMenu}
+        onExternalUrlClick={handleExternalUrlClick}
+      />
+    );
   };
 
   const handleStickerError = (name: string) => (e: React.SyntheticEvent<HTMLImageElement>) => {
