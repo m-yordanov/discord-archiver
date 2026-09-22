@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { Message } from '../types';
+import { Message, ChannelInfo } from '../types';
 import { isImage, isVideo } from '../attachments';
 import { DiscordMarkdown } from './DiscordMarkdown';
 
@@ -67,6 +67,9 @@ interface MessageItemProps {
   showHeader: boolean;
   searchQuery?: string;
   isCurrentMatch?: boolean;
+  isHighlighted?: boolean;
+  referencedMessage?: Message | null;
+  selectedChannel?: ChannelInfo | null;
   userMap: Record<string, string>;
   onImageClick?: (url: string) => void;
   onContextMenu?: (e: React.MouseEvent, message: Message) => void;
@@ -75,6 +78,8 @@ interface MessageItemProps {
   onChannelClick?: (channelId: string) => void;
   onChannelContextMenu?: (e: React.MouseEvent, channelId: string, channelName?: string) => void;
   onLinkContextMenu?: (e: React.MouseEvent, url: string) => void;
+  onJumpToMessage?: (messageId: string) => void;
+  onReplyContextMenu?: (e: React.MouseEvent, messageId: string) => void;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -82,6 +87,9 @@ export const MessageItem = memo(function MessageItem({
   showHeader,
   searchQuery,
   isCurrentMatch,
+  isHighlighted,
+  referencedMessage,
+  selectedChannel,
   userMap,
   onImageClick,
   onContextMenu,
@@ -90,6 +98,8 @@ export const MessageItem = memo(function MessageItem({
   onChannelClick,
   onChannelContextMenu,
   onLinkContextMenu,
+  onJumpToMessage,
+  onReplyContextMenu,
 }: MessageItemProps) {
   const getAuthorColor = (name: string) => {
     let hash = 0;
@@ -162,31 +172,122 @@ export const MessageItem = memo(function MessageItem({
   const isEmpty =
     !hasContents && !hasAttachments && !hasStickers && !hasEmbeds && !isCall && !isPin;
 
+  const hasReply = Boolean(message.message_reference);
+  let replyAuthor = 'Original message';
+  let replySnippet = '';
+
+  if (message.message_reference) {
+    if (message.message_reference.author) {
+      replyAuthor = message.message_reference.author;
+    } else if (referencedMessage?.author) {
+      replyAuthor = referencedMessage.author;
+    } else if (selectedChannel?.channel_type === 'DM' && message.author === 'You') {
+      const dmName = selectedChannel.name.replace(/^Direct Message with /, '');
+      replyAuthor = dmName || 'User';
+    }
+
+    if (message.message_reference.contents) {
+      replySnippet = message.message_reference.contents;
+    } else if (referencedMessage) {
+      if (referencedMessage.contents && referencedMessage.contents.trim().length > 0) {
+        replySnippet = referencedMessage.contents;
+      } else if (referencedMessage.attachments && referencedMessage.attachments.length > 0) {
+        replySnippet = '[Attachment]';
+      } else if (referencedMessage.stickers && referencedMessage.stickers.length > 0) {
+        replySnippet = `[Sticker: ${referencedMessage.stickers[0]?.name || 'Sticker'}]`;
+      } else if (referencedMessage.embeds && referencedMessage.embeds.length > 0) {
+        replySnippet = `[Embed: ${referencedMessage.embeds[0]?.title || 'Embed'}]`;
+      } else if (referencedMessage.call_info) {
+        replySnippet = '[Call]';
+      } else {
+        replySnippet = '[Message]';
+      }
+    } else {
+      replySnippet = 'Original message was deleted or not in archive';
+    }
+  }
+
+  const replyAuthorColor = getAuthorColor(replyAuthor);
+
   return (
     <div
       id={`msg-${message.id}`}
-      className={`hover:bg-dc-hover group px-4 py-0.5 ${showHeader ? 'mt-4' : ''} flex relative transition-colors ${
-        isCurrentMatch ? 'bg-dc-accent/20 ring-1 ring-dc-accent/60 rounded' : ''
+      className={`hover:bg-dc-hover group px-4 py-0.5 ${
+        showHeader ? (hasReply ? 'mt-2' : 'mt-4') : ''
+      } flex flex-col relative transition-colors ${
+        isHighlighted
+          ? 'bg-dc-accent/30 ring-2 ring-dc-accent rounded'
+          : isCurrentMatch
+          ? 'bg-dc-accent/20 ring-1 ring-dc-accent/60 rounded'
+          : ''
       }`}
     >
-      {showHeader ? (
+      {hasReply && (
         <div
-          className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-white font-medium mr-4 mt-0.5 overflow-hidden cursor-pointer"
-          style={{ backgroundColor: authorColor }}
+          className="flex items-center gap-1.5 text-xs text-dc-text-muted mb-1 ml-4 cursor-pointer select-none group/reply hover:text-white"
+          onClick={(e) => {
+            e.stopPropagation();
+            onJumpToMessage?.(message.message_reference!.message_id);
+          }}
           onContextMenu={(e) => {
             e.preventDefault();
-            onContextMenu?.(e, message);
+            e.stopPropagation();
+            onReplyContextMenu?.(e, message.message_reference!.message_id);
           }}
+          title={`Jump to message (${message.message_reference!.message_id})`}
         >
-          {message.author.charAt(0).toUpperCase()}
-        </div>
-      ) : (
-        <div className="w-14 shrink-0 text-right pr-4 opacity-0 group-hover:opacity-100 text-[10px] text-dc-text-muted self-start mt-[3px]">
-          {formatTimeHover(message.timestamp)}
+          <svg
+            className="w-8 h-3.5 text-[#4e5058] group-hover/reply:text-white shrink-0 overflow-visible ml-1 transition-colors"
+            viewBox="0 0 32 14"
+            fill="none"
+          >
+            <path
+              d="M 12 17 V 7 A 6 6 0 0 1 18 1 H 32"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+
+          <div
+            className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] text-white font-bold shrink-0 overflow-hidden"
+            style={{ backgroundColor: replyAuthorColor }}
+          >
+            {replyAuthor.charAt(0).toUpperCase()}
+          </div>
+
+          <span
+            className="font-semibold text-xs hover:underline shrink-0"
+            style={{ color: replyAuthorColor }}
+          >
+            @{replyAuthor}
+          </span>
+
+          <span className="truncate max-w-[500px] text-dc-text-muted group-hover/reply:text-dc-text text-xs">
+            {replySnippet}
+          </span>
         </div>
       )}
 
-      <div className="flex-1 min-w-0">
+      <div className="flex w-full">
+        {showHeader ? (
+          <div
+            className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-white font-medium mr-4 mt-0.5 overflow-hidden cursor-pointer"
+            style={{ backgroundColor: authorColor }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              onContextMenu?.(e, message);
+            }}
+          >
+            {message.author.charAt(0).toUpperCase()}
+          </div>
+        ) : (
+          <div className="w-14 shrink-0 text-right pr-4 opacity-0 group-hover:opacity-100 text-[10px] text-dc-text-muted self-start mt-[3px]">
+            {formatTimeHover(message.timestamp)}
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
         {showHeader && (
           <div className="flex items-baseline mb-1">
             <span
@@ -391,5 +492,6 @@ export const MessageItem = memo(function MessageItem({
         )}
       </div>
     </div>
-  );
+  </div>
+);
 });

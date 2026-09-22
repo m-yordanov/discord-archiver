@@ -108,40 +108,25 @@ interface InlineRule {
 }
 
 const INLINE_RULES: InlineRule[] = [
-  // Escape character (e.g. \* or \_)
   { type: 'escape', regex: /\\([\\*_`~|()\[\]#+.!<>\\-])/ },
-  // Inline code (not recursive)
   { type: 'inlineCode', regex: /`([^`\n]+)`/ },
-  // Spoilers ||text||
   { type: 'spoiler', regex: /\|\|([\s\S]+?)\|\|/ },
-  // Masked links [text](url)
   { type: 'maskedLink', regex: /\[([^\]\n]+)\]\((https?:\/\/[^\s)\n]+)\)/ },
-  // Discord in-app channel jumps
   {
     type: 'discordChannelUrl',
     regex: /https?:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/channels\/(?:@me|\d+)\/(\d+)/,
   },
-  // Suppressed links <https://...>
   { type: 'suppressedUrl', regex: /<(https?:\/\/[^\s>\n]+)>/ },
-  // Mentions
   { type: 'userMention', regex: /<@!?(\d+)>/ },
   { type: 'channelMention', regex: /<#(\d+)>/ },
   { type: 'roleMention', regex: /<@&(\d+)>/ },
-  // Timestamps
   { type: 'timestamp', regex: /<t:(\d+)(?::([a-zA-Z]))?>/ },
-  // Bold Italic (*** or ___***)
   { type: 'boldItalic', regex: /\*\*\*([\s\S]+?)\*\*\*/ },
-  // Bold (**text**)
   { type: 'bold', regex: /\*\*([\s\S]+?)\*\*/ },
-  // Underline (__text__)
   { type: 'underline', regex: /__([\s\S]+?)__/ },
-  // Strikethrough (~~text~~)
   { type: 'strikethrough', regex: /~~([\s\S]+?)~~/ },
-  // Italic with * (*text*)
   { type: 'italicAsterisk', regex: /(?:^|[^\*])\*([^\*\n]+)\*(?:[^\*]|$)/ },
-  // Italic with _ (_text_)
   { type: 'italicUnderscore', regex: /(?:^|[^\w])_([^\_\n]+)_(?:[^\w]|$)/ },
-  // Plain URLs
   { type: 'plainUrl', regex: /https?:\/\/[^\s<]+/ },
 ];
 
@@ -157,7 +142,6 @@ function renderInlineNodes(
   for (const rule of INLINE_RULES) {
     const match = rule.regex.exec(text);
     if (match) {
-      // If regex had a leading boundary character captured (like for italics), adjust index
       let matchIdx = match.index;
       if (
         (rule.type === 'italicAsterisk' || rule.type === 'italicUnderscore') &&
@@ -194,7 +178,6 @@ function renderInlineNodes(
 
   const fullMatch = earliest.match[0];
   let matchedLength = fullMatch.length;
-  // If we shifted for boundary prefix:
   if (
     (earliest.rule.type === 'italicAsterisk' || earliest.rule.type === 'italicUnderscore') &&
     fullMatch.length > 0 &&
@@ -203,7 +186,6 @@ function renderInlineNodes(
   ) {
     matchedLength -= 1;
   }
-  // If matched had trailing boundary:
   if (
     (earliest.rule.type === 'italicAsterisk' || earliest.rule.type === 'italicUnderscore') &&
     fullMatch.length > 0 &&
@@ -335,8 +317,6 @@ function renderInlineNodes(
           {trailing ? highlightText(trailing, props.searchQuery) : null}
         </React.Fragment>
       );
-      // plainUrl matched fullMatch, but cleanUrl may have left trailing punctuation
-      // We consume fullMatch because trailing is already rendered
       break;
     }
 
@@ -513,7 +493,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
   const { content } = props;
   if (!content) return null;
 
-  // Split into block elements: code blocks, multi-line quotes, single-line quotes, headers, subtext, lists, paragraphs
   const elements: React.ReactNode[] = [];
   const lines = content.split('\n');
 
@@ -523,13 +502,11 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
   while (i < lines.length) {
     const line = lines[i];
 
-    // Check for fenced code block: ```[lang]
     if (line.trimStart().startsWith('```')) {
       const codeLines: string[] = [];
       const langMatch = line.trimStart().match(/^```([a-zA-Z0-9_-]*)/);
       const lang = langMatch ? langMatch[1] : undefined;
 
-      // Handle single-line code block: ```code```
       const singleLineMatch = line.match(/^```([a-zA-Z0-9_-]*)\s*([\s\S]*?)```$/);
       if (singleLineMatch && line.trim().endsWith('```') && line.trim().length > 5) {
         elements.push(
@@ -548,7 +525,7 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
         codeLines.push(lines[i]);
         i++;
       }
-      if (i < lines.length) i++; // consume closing ```
+      if (i < lines.length) i++;
 
       elements.push(
         <CodeBlock key={`block-${blockIndex++}`} code={codeLines.join('\n')} lang={lang} />
@@ -556,7 +533,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for multi-line blockquote: >>> text
     if (line.startsWith('>>> ') || line === '>>>') {
       const quoteLines: string[] = [line.slice(3).replace(/^\s/, '')];
       i++;
@@ -579,7 +555,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for single-line blockquote: > text (consecutive lines grouped)
     if (line.startsWith('> ') || line === '>') {
       const quoteLines: string[] = [];
       while (i < lines.length && (lines[i].startsWith('> ') || lines[i] === '>')) {
@@ -601,7 +576,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for Headers: # H1, ## H2, ### H3
     const h1Match = line.match(/^#\s+(.+)$/);
     if (h1Match) {
       elements.push(
@@ -635,7 +609,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for subtext: -# text
     const subtextMatch = line.match(/^-#\s+(.+)$/);
     if (subtextMatch) {
       elements.push(
@@ -647,7 +620,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for unordered lists: - item or * item
     const ulMatch = line.match(/^(\s*)(?:[-*])\s+(.+)$/);
     if (ulMatch) {
       const listItems: { indent: number; text: string }[] = [];
@@ -676,7 +648,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Check for ordered lists: 1. item
     const olMatch = line.match(/^(\s*)(\d+)\.\s+(.+)$/);
     if (olMatch) {
       const listItems: { num: string; indent: number; text: string }[] = [];
@@ -705,7 +676,6 @@ export function DiscordMarkdown(props: DiscordMarkdownProps) {
       continue;
     }
 
-    // Normal line / paragraph
     elements.push(
       <div key={`block-${blockIndex++}`} className="min-h-[1.25em]">
         {line.length === 0 ? (

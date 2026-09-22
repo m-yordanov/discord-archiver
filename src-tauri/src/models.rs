@@ -35,6 +35,16 @@ pub struct RawMessage {
     pub author: Option<serde_json::Value>,
     #[serde(rename = "author_id", alias = "AuthorID", alias = "user_id", default)]
     pub author_id: Option<serde_json::Value>,
+    #[serde(
+        rename = "message_reference",
+        alias = "MessageReference",
+        alias = "reference",
+        alias = "Reference",
+        default
+    )]
+    pub message_reference: Option<serde_json::Value>,
+    #[serde(rename = "referenced_message", alias = "ReferencedMessage", default)]
+    pub referenced_message: Option<serde_json::Value>,
 }
 
 impl RawMessage {
@@ -152,6 +162,19 @@ pub struct CallInfo {
     pub is_missed: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageReference {
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contents: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct Message {
     pub id: String,
@@ -164,6 +187,8 @@ pub struct Message {
     pub message_type: String,
     pub author: String,
     pub author_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_reference: Option<MessageReference>,
 }
 
 #[derive(Serialize, Clone)]

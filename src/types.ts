@@ -39,6 +39,14 @@ export interface CallInfo {
   is_missed: boolean;
 }
 
+export interface MessageReference {
+  message_id: string;
+  channel_id?: string | null;
+  guild_id?: string | null;
+  author?: string | null;
+  contents?: string | null;
+}
+
 export interface Message {
   id: string;
   timestamp: string;
@@ -50,6 +58,7 @@ export interface Message {
   message_type: string;
   author: string;
   author_id: string | null;
+  message_reference?: MessageReference | null;
 }
 
 export interface DataIndex {

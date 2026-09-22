@@ -171,6 +171,89 @@ fn extract_call(raw: &RawMessage) -> Option<CallInfo> {
     (t.as_i64() == Some(3) || t.as_str() == Some("CALL")).then(CallInfo::default)
 }
 
+fn extract_message_reference(raw: &RawMessage) -> Option<MessageReference> {
+    let mut message_id: Option<String> = None;
+    let mut channel_id: Option<String> = None;
+    let mut guild_id: Option<String> = None;
+    let mut author: Option<String> = None;
+    let mut contents: Option<String> = None;
+
+    if let Some(ref_val) = &raw.message_reference {
+        match ref_val {
+            serde_json::Value::Object(map) => {
+                message_id = map
+                    .get("message_id")
+                    .or_else(|| map.get("MessageId"))
+                    .or_else(|| map.get("id"))
+                    .and_then(id_to_string);
+                channel_id = map
+                    .get("channel_id")
+                    .or_else(|| map.get("ChannelId"))
+                    .and_then(id_to_string);
+                guild_id = map
+                    .get("guild_id")
+                    .or_else(|| map.get("GuildId"))
+                    .and_then(id_to_string);
+            }
+            serde_json::Value::String(s) => {
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    message_id = Some(trimmed.to_string());
+                }
+            }
+            serde_json::Value::Number(n) => {
+                message_id = Some(n.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(ref_msg) = &raw.referenced_message {
+        if let serde_json::Value::Object(map) = ref_msg {
+            if message_id.is_none() {
+                message_id = map.get("id").and_then(id_to_string);
+            }
+            if contents.is_none() {
+                contents = map
+                    .get("content")
+                    .or_else(|| map.get("contents"))
+                    .or_else(|| map.get("Contents"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+            }
+            if author.is_none() {
+                if let Some(auth_val) = map.get("author").or_else(|| map.get("Author")) {
+                    match auth_val {
+                        serde_json::Value::Object(amap) => {
+                            author = amap
+                                .get("global_name")
+                                .or_else(|| amap.get("username"))
+                                .or_else(|| amap.get("name"))
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string);
+                        }
+                        serde_json::Value::String(s) => {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                author = Some(trimmed.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    message_id.map(|id| MessageReference {
+        message_id: id,
+        channel_id,
+        guild_id,
+        author,
+        contents,
+    })
+}
+
 fn classify_message(
     contents: &str,
     attachments: &[String],
@@ -191,6 +274,7 @@ fn classify_message(
             Some(7) => Some("USER_JOIN"),
             Some(8..=11) => Some("GUILD_BOOST"),
             Some(18) => Some("THREAD_CREATED"),
+            Some(19) => Some("REPLY"),
             _ => None,
         };
         if let Some(kind) = by_code {
@@ -205,6 +289,7 @@ fn classify_message(
                 ("BOOST", "GUILD_BOOST"),
                 ("THREAD", "THREAD_CREATED"),
                 ("CALL", "CALL"),
+                ("REPLY", "REPLY"),
             ]
             .into_iter()
             .find(|(needle, _)| upper.contains(needle));
@@ -515,6 +600,7 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
     let stickers = extract_stickers(&raw);
     let embeds = extract_embeds(&raw);
     let call_info = extract_call(&raw);
+    let message_reference = extract_message_reference(&raw);
 
     let attachments: Vec<String> = raw
         .attachments
@@ -555,6 +641,7 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
         message_type,
         author: "You".to_string(),
         author_id,
+        message_reference,
     }
 }
 
@@ -988,5 +1075,56 @@ mod tests {
             .err()
             .expect("a missing path should be an error");
         assert!(err.contains("does not exist"), "got: {}", err);
+    }
+
+    #[test]
+    fn parses_discord_export_message_reference() {
+        let json = r#"{
+            "ID": "100000000000000001",
+            "Timestamp": "2023-01-01T12:00:00.000Z",
+            "Contents": "I am replying to you",
+            "Type": 19,
+            "message_reference": {
+                "message_id": "99999999999999999",
+                "channel_id": "123456",
+                "guild_id": "789012"
+            }
+        }"#;
+
+        let raw: RawMessage = serde_json::from_str(json).expect("should deserialize");
+        let msg = to_message(raw, None);
+
+        assert_eq!(msg.message_type, "REPLY");
+        let reference = msg.message_reference.expect("should have reference");
+        assert_eq!(reference.message_id, "99999999999999999");
+        assert_eq!(reference.channel_id.as_deref(), Some("123456"));
+        assert_eq!(reference.guild_id.as_deref(), Some("789012"));
+    }
+
+    #[test]
+    fn parses_third_party_referenced_message() {
+        let json = r#"{
+            "id": "100000000000000002",
+            "timestamp": "2023-01-01T12:01:00.000Z",
+            "contents": "Another reply",
+            "type": "REPLY",
+            "referenced_message": {
+                "id": "88888888888888888",
+                "content": "Original text here",
+                "author": {
+                    "username": "alice",
+                    "global_name": "Alice In Wonderland"
+                }
+            }
+        }"#;
+
+        let raw: RawMessage = serde_json::from_str(json).expect("should deserialize");
+        let msg = to_message(raw, None);
+
+        assert_eq!(msg.message_type, "REPLY");
+        let reference = msg.message_reference.expect("should have reference");
+        assert_eq!(reference.message_id, "88888888888888888");
+        assert_eq!(reference.contents.as_deref(), Some("Original text here"));
+        assert_eq!(reference.author.as_deref(), Some("Alice In Wonderland"));
     }
 }

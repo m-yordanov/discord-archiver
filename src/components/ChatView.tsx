@@ -15,6 +15,7 @@ const PAGE_SIZE = 500;
 
 const shouldShowHeader = (currentMsg: Message, prevMsg: Message | null) => {
   if (!prevMsg) return true;
+  if (currentMsg.message_reference) return true;
   if (currentMsg.author !== prevMsg.author) return true;
 
   const currentT = new Date(currentMsg.timestamp.replace(' ', 'T')).getTime();
@@ -50,6 +51,7 @@ export function ChatView({
   const [currentMatchIdx, setCurrentMatchIdx] = useState<number>(0);
   const [showResultsPanel, setShowResultsPanel] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -59,6 +61,13 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const shouldScrollToBottomRef = useRef(true);
+  const highlightTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
 
   const showToast = useCallback((text: string) => {
     setToastMessage(text);
@@ -157,6 +166,14 @@ export function ChatView({
   const filteredMessages = useMemo(() => applyFilters(messages, filters), [messages, filters]);
   const activeFilterCount = countActiveFilters(filters);
 
+  const messageMap = useMemo(() => {
+    const map = new Map<string, Message>();
+    for (const m of messages) {
+      map.set(m.id, m);
+    }
+    return map;
+  }, [messages]);
+
   const virtualizer = useVirtualizer({
     count: filteredMessages.length,
     getScrollElement: () => scrollRef.current,
@@ -226,6 +243,50 @@ export function ChatView({
     setCurrentMatchIdx(boundedIdx);
     virtualizer.scrollToIndex(matchingIndices[boundedIdx], { align: 'center' });
   }, [matchingIndices, virtualizer]);
+
+  const handleJumpToMessage = useCallback((messageId: string) => {
+    const targetIdx = filteredMessages.findIndex(m => m.id === messageId);
+    if (targetIdx !== -1) {
+      virtualizer.scrollToIndex(targetIdx, { align: 'center' });
+      setHighlightedMessageId(messageId);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = window.setTimeout(() => {
+        setHighlightedMessageId(null);
+      }, 2000);
+      return;
+    }
+
+    const inUnfiltered = messages.some(m => m.id === messageId);
+    if (inUnfiltered) {
+      showToast('Referenced message is hidden by active search/filters');
+      return;
+    }
+
+    if (hasMoreOlder) {
+      showToast(`Referenced message (${messageId}) may be in older messages (+ Load Older)`);
+    } else {
+      showToast(`Referenced message (${messageId}) was not found in this archive`);
+    }
+  }, [filteredMessages, messages, virtualizer, hasMoreOlder, showToast]);
+
+  const handleReplyContextMenu = useCallback((e: React.MouseEvent, messageId: string) => {
+    const items: ContextMenuItem[] = [
+      { label: 'Copy Referenced Message ID', value: messageId, badge: 'ID' },
+      {
+        label: 'Jump to Message',
+        onClick: () => handleJumpToMessage(messageId),
+      },
+      {
+        label: 'Search for Message ID',
+        onClick: () => {
+          setSearchQuery(messageId);
+          setShowResultsPanel(true);
+        },
+      },
+    ];
+
+    setContextMenu({ x: e.clientX, y: e.clientY, items });
+  }, [handleJumpToMessage]);
 
   const handleMessageContextMenu = useCallback((e: React.MouseEvent, message: Message) => {
     const items: ContextMenuItem[] = [];
@@ -517,6 +578,9 @@ export function ChatView({
                       showHeader={shouldShowHeader(msg, prevMsg)}
                       searchQuery={searchQuery}
                       isCurrentMatch={currentMatchedMessageId === msg.id}
+                      isHighlighted={highlightedMessageId === msg.id}
+                      referencedMessage={msg.message_reference ? messageMap.get(msg.message_reference.message_id) : undefined}
+                      selectedChannel={selectedChannel}
                       userMap={userMap}
                       onImageClick={setSelectedImage}
                       onContextMenu={handleMessageContextMenu}
@@ -525,6 +589,8 @@ export function ChatView({
                       onChannelClick={handleChannelClick}
                       onChannelContextMenu={handleChannelContextMenu}
                       onLinkContextMenu={handleLinkContextMenu}
+                      onJumpToMessage={handleJumpToMessage}
+                      onReplyContextMenu={handleReplyContextMenu}
                     />
                   </div>
                 );
