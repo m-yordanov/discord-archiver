@@ -305,7 +305,12 @@ fn classify_message(
         Some(serde_json::Value::String(s)) => s.parse::<u64>().unwrap_or(0),
         _ => 0,
     };
-    if flags & 8192 != 0 {
+    if flags & 8192 != 0
+        || attachments.iter().any(|a| {
+            let l = a.to_lowercase();
+            l.contains("voice-message") || l.contains("voice_message")
+        })
+    {
         return "VOICE_MESSAGE".to_string();
     }
 

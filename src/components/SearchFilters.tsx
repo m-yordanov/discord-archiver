@@ -21,6 +21,7 @@ const ATTACHMENT_MODES: { value: AttachmentMode; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'images', label: 'Images' },
   { value: 'videos', label: 'Videos' },
+  { value: 'audio', label: 'Audio' },
   { value: 'files', label: 'Files' },
 ];
 
@@ -161,7 +162,7 @@ export function SearchFilters({ filters, onChange, shownCount, totalCount }: Sea
               options={ATTACHMENT_MODES}
               value={filters.attachment}
               onChange={attachment => update({ attachment })}
-              columns="grid-cols-3"
+              columns="grid-cols-4"
             />
           </div>
 

@@ -121,8 +121,22 @@ fn is_video(url: &str) -> bool {
         || clean.ends_with(".mkv")
 }
 
+fn is_audio(url: &str) -> bool {
+    let clean = url.split('?').next().unwrap_or(url).to_lowercase();
+    clean.ends_with(".mp3")
+        || clean.ends_with(".ogg")
+        || clean.ends_with(".wav")
+        || clean.ends_with(".m4a")
+        || clean.ends_with(".aac")
+        || clean.ends_with(".flac")
+        || clean.ends_with(".opus")
+        || clean.ends_with(".oga")
+        || clean.contains("voice-message")
+        || clean.contains("voice_message")
+}
+
 fn is_other_file(url: &str) -> bool {
-    !is_image(url) && !is_video(url)
+    !is_image(url) && !is_video(url) && !is_audio(url)
 }
 
 fn matches_attachment(msg: &Message, mode: Option<&str>) -> bool {
@@ -131,6 +145,9 @@ fn matches_attachment(msg: &Message, mode: Option<&str>) -> bool {
         Some("none") => msg.attachments.is_empty(),
         Some("images") => msg.attachments.iter().any(|a| is_image(a)),
         Some("videos") => msg.attachments.iter().any(|a| is_video(a)),
+        Some("audio") => {
+            msg.attachments.iter().any(|a| is_audio(a)) || msg.message_type == "VOICE_MESSAGE"
+        }
         Some("files") => msg.attachments.iter().any(|a| is_other_file(a)),
         _ => true,
     }
@@ -311,6 +328,10 @@ mod tests {
             attachments: vec!["video.mp4".into()],
             ..msg_none.clone()
         };
+        let msg_audio = Message {
+            attachments: vec!["voice-message.ogg".into()],
+            ..msg_none.clone()
+        };
 
         assert!(matches_attachment(&msg_none, Some("none")));
         assert!(!matches_attachment(&msg_img, Some("none")));
@@ -318,6 +339,8 @@ mod tests {
         assert!(matches_attachment(&msg_img, Some("images")));
         assert!(!matches_attachment(&msg_img, Some("videos")));
         assert!(matches_attachment(&msg_vid, Some("videos")));
+        assert!(!matches_attachment(&msg_img, Some("audio")));
+        assert!(matches_attachment(&msg_audio, Some("audio")));
     }
 }
 

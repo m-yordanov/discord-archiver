@@ -9,6 +9,7 @@ import { JsonModal } from './JsonModal';
 import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SearchFilters } from './SearchFilters';
 import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
+import { isAudio } from '../attachments';
 
 const PAGE_SIZE = 500;
 
@@ -864,7 +865,14 @@ export function ChatView({
                       <span className="shrink-0">{m.timestamp.slice(0, 10)}</span>
                     </div>
                     <div className="line-clamp-2 text-dc-text break-words">
-                      {m.contents || (m.attachments.length > 0 ? '[Attachment]' : m.stickers.length > 0 ? '[Sticker]' : '[Message]')}
+                      {m.contents ||
+                        (m.message_type === 'VOICE_MESSAGE' || m.attachments.some(isAudio)
+                          ? '[Voice Message]'
+                          : m.attachments.length > 0
+                          ? '[Attachment]'
+                          : m.stickers.length > 0
+                          ? '[Sticker]'
+                          : '[Message]')}
                     </div>
                   </button>
                 );

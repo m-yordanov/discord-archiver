@@ -1,8 +1,9 @@
 import { memo } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { Message, ChannelInfo } from '../types';
-import { isImage, isVideo } from '../attachments';
+import { isImage, isVideo, isAudio } from '../attachments';
 import { DiscordMarkdown } from './DiscordMarkdown';
+import { AudioPlayer } from './AudioPlayer';
 
 const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
   e.preventDefault();
@@ -192,7 +193,14 @@ export const MessageItem = memo(function MessageItem({
       if (referencedMessage.contents && referencedMessage.contents.trim().length > 0) {
         replySnippet = referencedMessage.contents;
       } else if (referencedMessage.attachments && referencedMessage.attachments.length > 0) {
-        replySnippet = '[Attachment]';
+        if (
+          referencedMessage.message_type === 'VOICE_MESSAGE' ||
+          referencedMessage.attachments.some(isAudio)
+        ) {
+          replySnippet = '[Voice Message]';
+        } else {
+          replySnippet = '[Attachment]';
+        }
       } else if (referencedMessage.stickers && referencedMessage.stickers.length > 0) {
         replySnippet = `[Sticker: ${referencedMessage.stickers[0]?.name || 'Sticker'}]`;
       } else if (referencedMessage.embeds && referencedMessage.embeds.length > 0) {
@@ -362,6 +370,21 @@ export const MessageItem = memo(function MessageItem({
                     src={url}
                     controls
                     className="max-h-[300px] max-w-[400px] rounded-lg bg-black"
+                  />
+                );
+              }
+
+              if (isAudio(url) || message.message_type === 'VOICE_MESSAGE') {
+                const isVoice =
+                  message.message_type === 'VOICE_MESSAGE' ||
+                  url.toLowerCase().includes('voice-message') ||
+                  url.toLowerCase().includes('voice_message');
+                return (
+                  <AudioPlayer
+                    key={i}
+                    src={url}
+                    isVoiceMessage={isVoice}
+                    onLinkContextMenu={onLinkContextMenu}
                   />
                 );
               }
