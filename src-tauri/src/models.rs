@@ -205,3 +205,15 @@ pub struct MessagesResponse {
     pub messages: Vec<Message>,
     pub total: usize,
 }
+
+#[derive(Serialize, Clone)]
+pub struct SearchMatch {
+    pub message: Message,
+    pub total_index: usize,
+}
+
+#[derive(Serialize, Clone)]
+pub struct SearchResponse {
+    pub matches: Vec<SearchMatch>,
+    pub total_matches: usize,
+}

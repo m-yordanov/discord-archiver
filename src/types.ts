@@ -73,3 +73,14 @@ export interface MessagesResponse {
   messages: Message[];
   total: number;
 }
+
+export interface SearchMatch {
+  message: Message;
+  total_index: number;
+}
+
+export interface SearchResponse {
+  matches: SearchMatch[];
+  total_matches: number;
+}
+
