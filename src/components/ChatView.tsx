@@ -12,6 +12,7 @@ import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from 
 import { isAudio } from '../attachments';
 import { Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
 import { MediaGallery } from './MediaGallery';
+import { useSettings } from '../settings';
 
 const PAGE_SIZE = 500;
 
@@ -42,6 +43,7 @@ export function ChatView({
   onOpenChannelById,
   onOpenSettings,
 }: ChatViewProps) {
+  const { timeFormat } = useSettings();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -840,6 +842,7 @@ export function ChatView({
                       onLinkContextMenu={handleLinkContextMenu}
                       onJumpToMessage={handleJumpToMessage}
                       onReplyContextMenu={handleReplyContextMenu}
+                      timeFormat={timeFormat}
                     />
                     {isLastItem && hasMoreNewer && (
                       <div className="flex justify-center pt-4 pb-2">

@@ -246,8 +246,7 @@ export function SettingsModal({
                       <div className="w-full h-8 rounded bg-[#313338] border border-[#1e1f22] mb-1 flex items-center px-2">
                         <div className="w-3 h-3 rounded-full bg-[#5865F2]" />
                       </div>
-                      <span className="text-xs font-semibold">Dark (Default)</span>
-                      <span className="text-[10px] text-dc-text-muted">Classic Discord dark theme</span>
+                      <span className="text-xs font-semibold">Dark</span>
                     </button>
 
                     <button
@@ -263,7 +262,6 @@ export function SettingsModal({
                         <div className="w-3 h-3 rounded-full bg-[#5865F2]" />
                       </div>
                       <span className="text-xs font-semibold">Midnight</span>
-                      <span className="text-[10px] text-dc-text-muted">Pure black OLED contrast</span>
                     </button>
 
                     <button
@@ -279,7 +277,6 @@ export function SettingsModal({
                         <div className="w-3 h-3 rounded-full bg-[#5865F2]" />
                       </div>
                       <span className="text-xs font-semibold">Light</span>
-                      <span className="text-[10px] text-dc-text-muted">Bright interface palette</span>
                     </button>
                   </div>
                 </div>
@@ -303,6 +300,43 @@ export function SettingsModal({
                         {size}
                       </button>
                     ))}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-bold text-dc-text-muted uppercase tracking-wider mb-2">
+                    Time Format
+                  </h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => updateSetting('timeFormat', '12h')}
+                      className={`py-2 px-3 rounded-md border text-xs font-medium cursor-pointer transition-colors flex flex-col items-start gap-0.5 ${
+                        settings.timeFormat === '12h'
+                          ? 'bg-dc-accent text-white border-dc-accent'
+                          : 'bg-dc-darker text-dc-text-muted hover:text-white border-dc-input/40'
+                      }`}
+                    >
+                      <span className="font-semibold">12-Hour</span>
+                      <span className={`text-[10px] ${settings.timeFormat === '12h' ? 'text-white/80' : 'text-dc-text-muted'}`}>
+                        2:45 PM
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => updateSetting('timeFormat', '24h')}
+                      className={`py-2 px-3 rounded-md border text-xs font-medium cursor-pointer transition-colors flex flex-col items-start gap-0.5 ${
+                        settings.timeFormat === '24h'
+                          ? 'bg-dc-accent text-white border-dc-accent'
+                          : 'bg-dc-darker text-dc-text-muted hover:text-white border-dc-input/40'
+                      }`}
+                    >
+                      <span className="font-semibold">24-Hour</span>
+                      <span className={`text-[10px] ${settings.timeFormat === '24h' ? 'text-white/80' : 'text-dc-text-muted'}`}>
+                        14:45
+                      </span>
+                    </button>
                   </div>
                 </div>
               </div>

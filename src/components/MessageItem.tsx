@@ -5,6 +5,7 @@ import { isImage, isVideo, isAudio } from '../attachments';
 import { DiscordMarkdown } from './DiscordMarkdown';
 import { AudioPlayer } from './AudioPlayer';
 import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
+import { TimeFormat } from '../settings';
 
 const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
   e.preventDefault();
@@ -120,6 +121,7 @@ interface MessageItemProps {
   onLinkContextMenu?: (e: React.MouseEvent, url: string) => void;
   onJumpToMessage?: (messageId: string) => void;
   onReplyContextMenu?: (e: React.MouseEvent, messageId: string) => void;
+  timeFormat?: TimeFormat;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -140,6 +142,7 @@ export const MessageItem = memo(function MessageItem({
   onLinkContextMenu,
   onJumpToMessage,
   onReplyContextMenu,
+  timeFormat = '12h',
 }: MessageItemProps) {
   const getAuthorColor = (name: string) => {
     let hash = 0;
@@ -151,22 +154,28 @@ export const MessageItem = memo(function MessageItem({
 
   const parseTimestamp = (raw: string) => new Date(raw.replace(' ', 'T'));
 
-  const formatTime = (isoString: string) =>
-    parseTimestamp(isoString).toLocaleString('en-US', {
+  const formatTime = (isoString: string) => {
+    const is24h = timeFormat === '24h';
+    return parseTimestamp(isoString).toLocaleString('en-US', {
       month: '2-digit',
       day: '2-digit',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
-      hour12: true,
+      hour12: !is24h,
+      ...(is24h ? { hourCycle: 'h23' } : {}),
     });
+  };
 
-  const formatTimeHover = (isoString: string) =>
-    parseTimestamp(isoString).toLocaleTimeString('en-US', {
+  const formatTimeHover = (isoString: string) => {
+    const is24h = timeFormat === '24h';
+    return parseTimestamp(isoString).toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit',
-      hour12: true,
+      hour12: !is24h,
+      ...(is24h ? { hourCycle: 'h23' } : {}),
     });
+  };
 
   const renderFormattedText = (rawText: string) => {
     if (!rawText) return null;
