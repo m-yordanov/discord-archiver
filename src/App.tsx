@@ -7,6 +7,8 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { ConversationSearchModal } from './components/ConversationSearchModal';
+import { SettingsModal } from './components/SettingsModal';
+import { loadSettings } from './settings';
 
 export default function App() {
   const [dataIndex, setDataIndex] = useState<DataIndex | null>(null);
@@ -17,6 +19,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const loadData = useCallback(async (path: string) => {
     setLoading(true);
@@ -59,12 +62,27 @@ export default function App() {
         if (dataIndex) {
           setIsSearchOpen(prev => !prev);
         }
+      } else if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+        e.preventDefault();
+        setIsSettingsOpen(prev => !prev);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [dataIndex]);
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const handleClosePackage = useCallback(() => {
+    setDataIndex(null);
+    setSelectedServer(null);
+    setSelectedChannel(null);
+    setDataPath(null);
+    setIsSettingsOpen(false);
+  }, []);
 
   const handleOpenFolder = async () => {
     const selected = await open({ directory: true, multiple: false });
@@ -147,54 +165,60 @@ export default function App() {
     </div>
   );
 
-  if (!dataIndex) {
-    return (
-      <>
+  return (
+    <>
+      {!dataIndex ? (
         <WelcomeScreen
           onOpenFolder={handleOpenFolder}
           onOpenZip={handleOpenZip}
           loading={loading}
           error={error}
         />
-        {dropOverlay}
-      </>
-    );
-  }
+      ) : (
+        <div className="flex h-screen w-screen overflow-hidden">
+          <Sidebar
+            dataIndex={dataIndex}
+            selectedServer={selectedServer}
+            selectedChannel={selectedChannel}
+            onSelectServer={setSelectedServer}
+            onSelectChannel={setSelectedChannel}
+            onOpenFolder={handleOpenFolder}
+            onOpenZip={handleOpenZip}
+            onOpenSearch={() => setIsSearchOpen(true)}
+          />
+          <ChatView
+            selectedChannel={selectedChannel}
+            dataPath={dataPath}
+            userMap={dataIndex.user_map}
+            onOpenDmByUserId={handleOpenDmByUserId}
+            onOpenChannelById={handleOpenChannelById}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+          />
+        </div>
+      )}
 
-  return (
-    <>
-      <div className="flex h-screen w-screen overflow-hidden">
-        <Sidebar
+      {dataIndex && (
+        <ConversationSearchModal
+          isOpen={isSearchOpen}
+          onClose={() => setIsSearchOpen(false)}
           dataIndex={dataIndex}
-          selectedServer={selectedServer}
-          selectedChannel={selectedChannel}
-          onSelectServer={setSelectedServer}
-          onSelectChannel={setSelectedChannel}
-          onOpenFolder={handleOpenFolder}
-          onOpenZip={handleOpenZip}
-          onOpenSearch={() => setIsSearchOpen(true)}
+          onSelectDm={(channel) => {
+            setSelectedServer('dms');
+            setSelectedChannel(channel);
+          }}
+          onSelectServerChannel={(serverId, channel) => {
+            setSelectedServer(serverId);
+            setSelectedChannel(channel);
+          }}
         />
-        <ChatView
-          selectedChannel={selectedChannel}
-          dataPath={dataPath}
-          userMap={dataIndex.user_map}
-          onOpenDmByUserId={handleOpenDmByUserId}
-          onOpenChannelById={handleOpenChannelById}
-        />
-      </div>
+      )}
 
-      <ConversationSearchModal
-        isOpen={isSearchOpen}
-        onClose={() => setIsSearchOpen(false)}
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
         dataIndex={dataIndex}
-        onSelectDm={(channel) => {
-          setSelectedServer('dms');
-          setSelectedChannel(channel);
-        }}
-        onSelectServerChannel={(serverId, channel) => {
-          setSelectedServer(serverId);
-          setSelectedChannel(channel);
-        }}
+        dataPath={dataPath}
+        onClosePackage={handleClosePackage}
       />
 
       {loading && (
@@ -203,7 +227,7 @@ export default function App() {
         </div>
       )}
       {error && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[95] flex items-center gap-3 bg-[#202225] border border-dc-input rounded-md px-4 py-2.5 shadow-2xl text-sm">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[95] flex items-center gap-3 bg-dc-dark border border-dc-input rounded-md px-4 py-2.5 shadow-2xl text-sm">
           <span className="text-amber-400">⚠️</span>
           <span className="text-white">{error}</span>
           <button
