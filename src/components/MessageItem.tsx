@@ -4,6 +4,7 @@ import { Message, ChannelInfo } from '../types';
 import { isImage, isVideo, isAudio } from '../attachments';
 import { DiscordMarkdown } from './DiscordMarkdown';
 import { AudioPlayer } from './AudioPlayer';
+import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
 
 const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
   e.preventDefault();
@@ -36,30 +37,68 @@ function ClickableImage({
   wrapperClassName,
   title,
   onImageClick,
-  onError,
 }: ClickableImageProps) {
+  const { resolvedUrl, isFailed, reportError } = useResolvedUrl(src);
+
+  if (isFailed) {
+    return (
+      <div className="inline-flex items-center gap-2 p-2.5 rounded-lg bg-dc-dark border border-dc-input/60 max-w-[360px] text-xs text-dc-text select-none">
+        <span className="text-base">⚠️</span>
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="font-semibold text-white truncate text-[11px]">Media Expired</span>
+          <span className="text-[10px] text-dc-text-muted truncate">{src.split('?')[0].split('/').pop()}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <a
-      href={src}
+      href={resolvedUrl}
       target="_blank"
       rel="noopener noreferrer"
-      className={wrapperClassName}
+      className={`${wrapperClassName || 'inline-block'} relative group`}
       onClick={(e) => {
         if (onImageClick) {
           e.preventDefault();
-          onImageClick(src);
+          onImageClick(resolvedUrl);
         }
       }}
     >
       <img
-        src={src}
+        src={resolvedUrl}
         alt={alt}
         title={title}
         className={className}
         loading="lazy"
-        onError={onError}
+        onError={reportError}
       />
     </a>
+  );
+}
+
+function VideoAttachment({ src }: { src: string }) {
+  const { resolvedUrl, isFailed, reportError } = useResolvedUrl(src);
+
+  if (isFailed) {
+    return (
+      <div className="inline-flex items-center gap-2 p-2.5 rounded-lg bg-dc-dark border border-dc-input/60 max-w-[360px] text-xs text-dc-text select-none">
+        <span className="text-base">⚠️</span>
+        <div className="flex flex-col min-w-0 flex-1">
+          <span className="font-semibold text-white truncate text-[11px]">Media Expired</span>
+          <span className="text-[10px] text-dc-text-muted truncate">{src.split('?')[0].split('/').pop()}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <video
+      src={resolvedUrl}
+      controls
+      className="max-h-[300px] max-w-[400px] rounded-lg bg-black"
+      onError={reportError}
+    />
   );
 }
 
@@ -364,14 +403,7 @@ export const MessageItem = memo(function MessageItem({
               }
 
               if (isVideo(url)) {
-                return (
-                  <video
-                    key={i}
-                    src={url}
-                    controls
-                    className="max-h-[300px] max-w-[400px] rounded-lg bg-black"
-                  />
-                );
+                return <VideoAttachment key={i} src={url} />;
               }
 
               if (isAudio(url) || message.message_type === 'VOICE_MESSAGE') {
@@ -397,11 +429,11 @@ export const MessageItem = memo(function MessageItem({
                   <span className="text-xl">📎</span>
                   <div className="flex-1 truncate">
                     <a
-                      href={url}
+                      href={getResolvedUrl(url)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-dc-text-link hover:underline truncate block"
-                      onClick={(e) => handleExternalUrlClick(e, url)}
+                      onClick={(e) => handleExternalUrlClick(e, getResolvedUrl(url))}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();

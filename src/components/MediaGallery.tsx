@@ -4,6 +4,7 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { ArrowLeft, Download, FileText, Film, Image as ImageIcon, Music, Search } from 'lucide-react';
 import { ChannelInfo, ChannelMediaItem, DownloadResult } from '../types';
+import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
 
 interface MediaGalleryProps {
   selectedChannel: ChannelInfo;
@@ -15,6 +16,114 @@ interface MediaGalleryProps {
 }
 
 type MediaFilterTab = 'all' | 'image' | 'video' | 'audio' | 'file';
+
+function GalleryImageItem({
+  item,
+  onImageClick,
+  onOpenLink,
+  onLinkContextMenu,
+  onJumpToMessage,
+}: {
+  item: ChannelMediaItem;
+  onImageClick: (url: string) => void;
+  onOpenLink: (e: React.MouseEvent, url: string) => void;
+  onLinkContextMenu?: (e: React.MouseEvent, url: string) => void;
+  onJumpToMessage: (messageId: string) => void;
+}) {
+  const { resolvedUrl, isFailed, reportError } = useResolvedUrl(item.url);
+
+  if (isFailed) {
+    return (
+      <div className="group relative aspect-square bg-dc-dark rounded-xl overflow-hidden border border-dc-input/40 flex flex-col justify-between p-3 select-none">
+        <div className="flex items-center justify-between">
+          <span className="text-base">⚠️</span>
+          <button
+            type="button"
+            onClick={e => onOpenLink(e, resolvedUrl)}
+            onContextMenu={e => onLinkContextMenu?.(e, resolvedUrl)}
+            className="text-dc-text-muted hover:text-white text-xs cursor-pointer"
+            title="Open link"
+          >
+            🔗
+          </button>
+        </div>
+
+        <div className="flex flex-col items-center justify-center my-auto">
+          <span className="text-[11px] font-semibold text-white">Media Expired</span>
+        </div>
+
+        <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
+          <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
+            {item.filename}
+          </span>
+          <div className="flex items-center justify-between text-[10px] text-gray-300">
+            <span className="truncate">{item.author}</span>
+            <span>{item.timestamp.slice(0, 10)}</span>
+          </div>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              onJumpToMessage(item.message_id);
+            }}
+            className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors cursor-pointer"
+          >
+            Jump to Message
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="group relative aspect-square bg-dc-dark rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm cursor-pointer"
+      onClick={() => onImageClick(resolvedUrl)}
+    >
+      <img
+        src={resolvedUrl}
+        alt={item.filename}
+        loading="lazy"
+        onError={reportError}
+        className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+      />
+
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
+        <div className="flex justify-end gap-1">
+          <button
+            type="button"
+            onClick={e => onOpenLink(e, resolvedUrl)}
+            onContextMenu={e => onLinkContextMenu?.(e, resolvedUrl)}
+            className="p-1 rounded bg-black/60 hover:bg-black text-white text-[11px] transition-colors cursor-pointer"
+            title="Open original"
+          >
+            🔗
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
+            {item.filename}
+          </span>
+          <div className="flex items-center justify-between text-[10px] text-gray-300">
+            <span className="truncate">{item.author}</span>
+            <span>{item.timestamp.slice(0, 10)}</span>
+          </div>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              onJumpToMessage(item.message_id);
+            }}
+            className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors cursor-pointer"
+          >
+            Jump to Message
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function MediaGallery({
   selectedChannel,
@@ -181,7 +290,7 @@ export function MediaGallery({
         </div>
       </div>
 
-      <div className="h-10 px-4 border-b border-dc-dark bg-[#2b2d31]/50 flex items-center gap-1 shrink-0 overflow-x-auto">
+      <div className="h-10 px-4 border-b border-dc-dark bg-dc-darker/50 flex items-center gap-1 shrink-0 overflow-x-auto">
         <button
           type="button"
           onClick={() => setTab('all')}
@@ -267,60 +376,23 @@ export function MediaGallery({
             {filteredItems.map((item, idx) => {
               if (item.media_type === 'image') {
                 return (
-                  <div
+                  <GalleryImageItem
                     key={`${item.message_id}-${idx}`}
-                    className="group relative aspect-square bg-[#1e1f22] rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm cursor-pointer"
-                    onClick={() => onImageClick(item.url)}
-                  >
-                    <img
-                      src={item.url}
-                      alt={item.filename}
-                      loading="lazy"
-                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
-                    />
-
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          type="button"
-                          onClick={e => handleOpenLink(e, item.url)}
-                          onContextMenu={e => onLinkContextMenu?.(e, item.url)}
-                          className="p-1 rounded bg-black/60 hover:bg-black text-white text-[11px] transition-colors"
-                          title="Open original"
-                        >
-                          🔗
-                        </button>
-                      </div>
-
-                      <div className="flex flex-col gap-1 min-w-0">
-                        <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
-                          {item.filename}
-                        </span>
-                        <div className="flex items-center justify-between text-[10px] text-gray-300">
-                          <span className="truncate">{item.author}</span>
-                          <span>{item.timestamp.slice(0, 10)}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={e => {
-                            e.stopPropagation();
-                            onJumpToMessage(item.message_id);
-                          }}
-                          className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
-                        >
-                          Jump to Message
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                    item={item}
+                    onImageClick={onImageClick}
+                    onOpenLink={handleOpenLink}
+                    onLinkContextMenu={onLinkContextMenu}
+                    onJumpToMessage={onJumpToMessage}
+                  />
                 );
               }
 
               if (item.media_type === 'video') {
+                const finalUrl = getResolvedUrl(item.url);
                 return (
                   <div
                     key={`${item.message_id}-${idx}`}
-                    className="group relative aspect-square bg-[#1e1f22] rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-2"
+                    className="group relative aspect-square bg-dc-dark rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-2"
                   >
                     <div className="flex-1 flex items-center justify-center">
                       <div className="w-12 h-12 rounded-full bg-dc-accent/80 group-hover:bg-dc-accent text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-110">
@@ -328,7 +400,7 @@ export function MediaGallery({
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1 min-w-0 bg-[#2b2d31]/90 p-2 rounded-lg">
+                    <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
                       <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
                         {item.filename}
                       </span>
@@ -339,8 +411,8 @@ export function MediaGallery({
                       <div className="flex items-center gap-1 mt-1">
                         <button
                           type="button"
-                          onClick={e => handleOpenLink(e, item.url)}
-                          className="flex-1 py-1 rounded bg-[#1e1f22] hover:bg-dc-hover text-white text-[10px] font-medium transition-colors"
+                          onClick={e => handleOpenLink(e, finalUrl)}
+                          className="flex-1 py-1 rounded bg-dc-dark hover:bg-dc-hover text-white text-[10px] font-medium transition-colors"
                         >
                           Play / Open
                         </button>
@@ -358,17 +430,18 @@ export function MediaGallery({
               }
 
               if (item.media_type === 'audio') {
+                const finalUrl = getResolvedUrl(item.url);
                 return (
                   <div
                     key={`${item.message_id}-${idx}`}
-                    className="group relative aspect-square bg-[#1e1f22] rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
+                    className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xl">🎙️</span>
                       <button
                         type="button"
-                        onClick={e => handleOpenLink(e, item.url)}
-                        onContextMenu={e => onLinkContextMenu?.(e, item.url)}
+                        onClick={e => handleOpenLink(e, finalUrl)}
+                        onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
                         className="text-dc-text-muted hover:text-white text-xs"
                         title="Open file"
                       >
@@ -382,7 +455,7 @@ export function MediaGallery({
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-1 min-w-0 bg-[#2b2d31]/90 p-2 rounded-lg">
+                    <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
                       <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
                         {item.filename}
                       </span>
@@ -402,10 +475,11 @@ export function MediaGallery({
                 );
               }
 
+              const finalUrl = getResolvedUrl(item.url);
               return (
                 <div
                   key={`${item.message_id}-${idx}`}
-                  className="group relative aspect-square bg-[#1e1f22] rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
+                  className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-dc-accent/20 text-dc-accent border border-dc-accent/30 uppercase">
@@ -413,8 +487,8 @@ export function MediaGallery({
                     </span>
                     <button
                       type="button"
-                      onClick={e => handleOpenLink(e, item.url)}
-                      onContextMenu={e => onLinkContextMenu?.(e, item.url)}
+                      onClick={e => handleOpenLink(e, finalUrl)}
+                      onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
                       className="text-dc-text-muted hover:text-white text-xs"
                       title="Open file"
                     >
@@ -426,7 +500,7 @@ export function MediaGallery({
                     <FileText className="w-10 h-10 text-dc-text-muted group-hover:text-white transition-colors" />
                   </div>
 
-                  <div className="flex flex-col gap-1 min-w-0 bg-[#2b2d31]/90 p-2 rounded-lg">
+                  <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
                     <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
                       {item.filename}
                     </span>
@@ -450,7 +524,7 @@ export function MediaGallery({
       </div>
 
       {toast && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#202225] text-white text-xs px-4 py-2.5 rounded-md shadow-2xl border border-dc-input flex items-center gap-2 select-none pointer-events-none">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 bg-dc-dark text-white text-xs px-4 py-2.5 rounded-md shadow-2xl border border-dc-input flex items-center gap-2 select-none pointer-events-none">
           <span className="text-dc-green font-bold">✓</span>
           <span className="font-medium">{toast}</span>
         </div>

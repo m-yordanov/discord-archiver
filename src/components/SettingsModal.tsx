@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Database, Palette, Globe, Info, X, LogOut, Check } from 'lucide-react';
 import { DataIndex } from '../types';
 import { AppSettings, loadSettings, saveSettings } from '../settings';
+import { clearUrlResolverCache } from '../urlResolver';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -325,9 +326,11 @@ export function SettingsModal({
 
                     <button
                       type="button"
-                      onClick={() =>
-                        updateSetting('enableWaybackFallback', !settings.enableWaybackFallback)
-                      }
+                      onClick={() => {
+                        const nextVal = !settings.enableWaybackFallback;
+                        updateSetting('enableWaybackFallback', nextVal);
+                        clearUrlResolverCache();
+                      }}
                       className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
                         settings.enableWaybackFallback ? 'bg-dc-green' : 'bg-[#4e5058]'
                       }`}
