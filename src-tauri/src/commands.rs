@@ -1,6 +1,10 @@
+use std::fs;
 use std::sync::Mutex;
 use crate::archive::Source;
-use crate::models::{DataIndex, Message, MessagesResponse, SearchMatch, SearchResponse};
+use crate::models::{
+    ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
+    SearchResponse,
+};
 use crate::parser;
 use tauri::State;
 
@@ -291,6 +295,169 @@ pub fn search_channel_messages(
     })
 }
 
+pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
+    let mut items = Vec::new();
+    for msg in messages {
+        for url in &msg.attachments {
+            let filename = url
+                .split('?')
+                .next()
+                .unwrap_or(url)
+                .split('/')
+                .last()
+                .unwrap_or("file")
+                .to_string();
+
+            let media_type = if is_image(url) {
+                "image"
+            } else if is_video(url) {
+                "video"
+            } else if is_audio(url) || msg.message_type == "VOICE_MESSAGE" {
+                "audio"
+            } else {
+                "file"
+            }
+            .to_string();
+
+            items.push(ChannelMediaItem {
+                url: url.clone(),
+                message_id: msg.id.clone(),
+                author: msg.author.clone(),
+                timestamp: msg.timestamp.clone(),
+                filename,
+                media_type,
+            });
+        }
+    }
+    items
+}
+
+#[tauri::command]
+pub fn get_channel_media(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChannelMediaItem>, String> {
+    let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
+
+    let is_cached = cache_guard
+        .as_ref()
+        .is_some_and(|c| c.folder_names == folder_names);
+
+    if !is_cached {
+        let (texts, default_user_id) = {
+            let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
+            if let Some(source) = source_guard.as_mut() {
+                parser::read_channel_texts_from_source(source, &folder_names)
+            } else if let Some(path) = &data_path {
+                parser::read_channel_texts_from_path(path, &folder_names)?
+            } else {
+                return Err("No data package loaded.".to_string());
+            }
+        };
+
+        let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
+        *cache_guard = Some(CachedChannel {
+            folder_names: folder_names.clone(),
+            messages,
+        });
+    }
+
+    let cached = cache_guard.as_ref().unwrap();
+    Ok(extract_media_items(&cached.messages))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other => other,
+        })
+        .collect();
+    if sanitized.trim().is_empty() {
+        "file".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[tauri::command]
+pub fn download_channel_media(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    save_path: String,
+    state: State<'_, AppState>,
+) -> Result<DownloadResult, String> {
+    let media_items = get_channel_media(data_path, folder_names, state)?;
+    if media_items.is_empty() {
+        return Ok(DownloadResult {
+            success: true,
+            count: 0,
+            file_path: save_path,
+            total_bytes: 0,
+        });
+    }
+
+    let file = fs::File::create(&save_path)
+        .map_err(|e| format!("Could not create zip file at {}: {}", save_path, e))?;
+    let mut zip_writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut downloaded_count = 0;
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (idx, item) in media_items.iter().enumerate() {
+        let clean_name = sanitize_filename(&item.filename);
+        let mut entry_name = format!("{:03}_{}", idx + 1, clean_name);
+        let mut counter = 1;
+        while seen_names.contains(&entry_name) {
+            entry_name = format!("{:03}_{}_{}", idx + 1, counter, clean_name);
+            counter += 1;
+        }
+        seen_names.insert(entry_name.clone());
+
+        let bytes: Option<Vec<u8>> = if item.url.starts_with("http://") || item.url.starts_with("https://") {
+            let res = ureq::get(&item.url).call();
+            match res {
+                Ok(mut r) => {
+                    let mut buf = Vec::new();
+                    use std::io::Read;
+                    if r.body_mut().as_reader().read_to_end(&mut buf).is_ok() {
+                        Some(buf)
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            }
+        } else {
+            fs::read(&item.url).ok()
+        };
+
+        if let Some(data) = bytes {
+            use std::io::Write;
+            if zip_writer.start_file(&entry_name, options).is_ok() {
+                if zip_writer.write_all(&data).is_ok() {
+                    downloaded_count += 1;
+                }
+            }
+        }
+    }
+
+    zip_writer.finish().map_err(|e| format!("Could not finalize zip: {}", e))?;
+
+    let total_bytes = fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
+
+    Ok(DownloadResult {
+        success: true,
+        count: downloaded_count,
+        file_path: save_path,
+        total_bytes,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +509,42 @@ mod tests {
         assert!(!matches_attachment(&msg_img, Some("audio")));
         assert!(matches_attachment(&msg_audio, Some("audio")));
     }
+
+    #[test]
+    fn test_extract_media_items() {
+        let msg = Message {
+            id: "m1".into(),
+            timestamp: "2023-01-01".into(),
+            contents: "test".into(),
+            attachments: vec![
+                "https://cdn.example.com/cat.png".into(),
+                "https://cdn.example.com/sound.mp3".into(),
+                "https://cdn.example.com/doc.pdf".into(),
+            ],
+            stickers: vec![],
+            embeds: vec![],
+            call_info: None,
+            message_type: "DEFAULT".into(),
+            author: "alice".into(),
+            author_id: None,
+            message_reference: None,
+        };
+
+        let items = extract_media_items(&[msg]);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].media_type, "image");
+        assert_eq!(items[0].filename, "cat.png");
+        assert_eq!(items[1].media_type, "audio");
+        assert_eq!(items[1].filename, "sound.mp3");
+        assert_eq!(items[2].media_type, "file");
+        assert_eq!(items[2].filename, "doc.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("valid.png"), "valid.png");
+        assert_eq!(sanitize_filename("bad/name:here?.jpg"), "bad_name_here_.jpg");
+    }
 }
+
 

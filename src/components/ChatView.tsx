@@ -10,6 +10,8 @@ import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SearchFilters } from './SearchFilters';
 import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
 import { isAudio } from '../attachments';
+import { Image as ImageIcon } from 'lucide-react';
+import { MediaGallery } from './MediaGallery';
 
 const PAGE_SIZE = 500;
 
@@ -56,6 +58,7 @@ export function ChatView({
   const [showResultsPanel, setShowResultsPanel] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'chat' | 'media'>('chat');
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -91,6 +94,7 @@ export function ChatView({
       setSearchResults([]);
       setTotalSearchMatches(0);
       setCurrentMatchIdx(0);
+      setViewMode('chat');
       return;
     }
 
@@ -125,6 +129,7 @@ export function ChatView({
     setSearchResults([]);
     setTotalSearchMatches(0);
     setCurrentMatchIdx(0);
+    setViewMode('chat');
   }, [selectedChannel, dataPath]);
 
   const loadOlderMessages = useCallback(async () => {
@@ -689,6 +694,20 @@ export function ChatView({
             totalCount={messages.length}
           />
 
+          <button
+            type="button"
+            onClick={() => setViewMode(prev => (prev === 'media' ? 'chat' : 'media'))}
+            className={`px-2 py-1 rounded text-xs transition-colors cursor-pointer border flex items-center gap-1.5 ${
+              viewMode === 'media'
+                ? 'bg-dc-accent text-white border-dc-accent'
+                : 'bg-dc-dark text-dc-text-muted hover:text-white border-dc-input/60'
+            }`}
+            title={viewMode === 'media' ? 'Back to Messages' : 'View Photos, Videos & Files'}
+          >
+            <ImageIcon className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Media</span>
+          </button>
+
           {searchQuery && searchResults.length > 0 && (
             <button
               type="button"
@@ -706,7 +725,20 @@ export function ChatView({
         </div>
       </div>
 
-      <div className="flex-1 flex min-h-0 overflow-hidden relative">
+      {viewMode === 'media' ? (
+        <MediaGallery
+          selectedChannel={selectedChannel}
+          dataPath={dataPath}
+          onClose={() => setViewMode('chat')}
+          onJumpToMessage={messageId => {
+            setViewMode('chat');
+            handleJumpToMessage(messageId);
+          }}
+          onImageClick={setSelectedImage}
+          onLinkContextMenu={handleLinkContextMenu}
+        />
+      ) : (
+        <div className="flex-1 flex min-h-0 overflow-hidden relative">
         <div className="flex-1 overflow-y-auto p-4" ref={scrollRef} onScroll={handleScroll}>
           {loading ? (
             <div className="flex items-center justify-center h-full text-dc-text-muted">
@@ -886,6 +918,7 @@ export function ChatView({
           </div>
         )}
       </div>
+      )}
 
       <ImageModal
         imageUrl={selectedImage}

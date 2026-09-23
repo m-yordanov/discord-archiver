@@ -15,7 +15,9 @@ pub fn run() {
             commands::load_data_package,
             commands::get_messages,
             commands::get_raw_message,
-            commands::search_channel_messages
+            commands::search_channel_messages,
+            commands::get_channel_media,
+            commands::download_channel_media
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

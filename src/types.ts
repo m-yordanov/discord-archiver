@@ -84,3 +84,20 @@ export interface SearchResponse {
   total_matches: number;
 }
 
+export interface ChannelMediaItem {
+  url: string;
+  message_id: string;
+  author: string;
+  timestamp: string;
+  filename: string;
+  media_type: 'image' | 'video' | 'audio' | 'file';
+}
+
+export interface DownloadResult {
+  success: boolean;
+  count: number;
+  file_path: string;
+  total_bytes: number;
+}
+
+

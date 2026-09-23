@@ -217,3 +217,22 @@ pub struct SearchResponse {
     pub matches: Vec<SearchMatch>,
     pub total_matches: usize,
 }
+
+#[derive(Serialize, Clone)]
+pub struct ChannelMediaItem {
+    pub url: String,
+    pub message_id: String,
+    pub author: String,
+    pub timestamp: String,
+    pub filename: String,
+    pub media_type: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct DownloadResult {
+    pub success: bool,
+    pub count: usize,
+    pub file_path: String,
+    pub total_bytes: u64,
+}
+
