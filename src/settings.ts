@@ -68,6 +68,21 @@ export const saveSettings = (settings: AppSettings): void => {
   }
 };
 
+export const resetSettings = (): AppSettings => {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+  }
+  applySettings(DEFAULT_SETTINGS);
+  listeners.forEach(cb => {
+    try {
+      cb(DEFAULT_SETTINGS);
+    } catch {
+    }
+  });
+  return DEFAULT_SETTINGS;
+};
+
 export function useSettings(): AppSettings {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
 

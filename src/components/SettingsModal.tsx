@@ -1,7 +1,21 @@
-import { useState, useEffect } from 'react';
-import { Database, Palette, Globe, Info, X, LogOut, Check } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import {
+  Database,
+  Palette,
+  Globe,
+  Sliders,
+  Info,
+  X,
+  LogOut,
+  Check,
+  FolderOpen,
+  Trash2,
+  RotateCcw,
+  AlertTriangle,
+} from 'lucide-react';
 import { DataIndex } from '../types';
-import { AppSettings, loadSettings, saveSettings } from '../settings';
+import { AppSettings, loadSettings, saveSettings, resetSettings } from '../settings';
 import { clearUrlResolverCache } from '../urlResolver';
 
 interface SettingsModalProps {
@@ -12,7 +26,12 @@ interface SettingsModalProps {
   onClosePackage: () => void;
 }
 
-type SettingsTab = 'archive' | 'appearance' | 'media' | 'about';
+type SettingsTab = 'archive' | 'appearance' | 'media' | 'advanced' | 'about';
+
+interface CacheInfo {
+  path: string;
+  size_bytes: number;
+}
 
 export function SettingsModal({
   isOpen,
@@ -24,11 +43,71 @@ export function SettingsModal({
   const [activeTab, setActiveTab] = useState<SettingsTab>('archive');
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [toast, setToast] = useState<string | null>(null);
+  const [cacheInfo, setCacheInfo] = useState<CacheInfo | null>(null);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const fetchCacheInfo = useCallback(async () => {
+    try {
+      const info: CacheInfo = await invoke('get_cache_info');
+      setCacheInfo(info);
+    } catch {
+    }
+  }, []);
+
+  const handleOpenCacheFolder = async () => {
+    try {
+      await invoke('open_cache_folder');
+    } catch {
+      setToast('Could not open folder');
+      setTimeout(() => setToast(null), 2000);
+    }
+  };
+
+  const handleClearCache = async () => {
+    setIsClearingCache(true);
+    try {
+      const updated: CacheInfo = await invoke('clear_cache');
+      clearUrlResolverCache();
+      setCacheInfo(updated);
+      setToast('Cache cleared successfully');
+    } catch {
+      setToast('Failed to clear cache');
+    } finally {
+      setIsClearingCache(false);
+      setTimeout(() => setToast(null), 2500);
+    }
+  };
+
+  const handleResetSettings = () => {
+    const defaults = resetSettings();
+    setSettings(defaults);
+    clearUrlResolverCache();
+    setShowResetConfirm(false);
+    setToast('Settings reset to default');
+    setTimeout(() => setToast(null), 2000);
+  };
+
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+  };
 
   useEffect(() => {
     if (!isOpen) return;
     setSettings(loadSettings());
-  }, [isOpen]);
+    setShowResetConfirm(false);
+    fetchCacheInfo();
+  }, [isOpen, fetchCacheInfo]);
+
+  useEffect(() => {
+    if (activeTab === 'advanced') {
+      fetchCacheInfo();
+    }
+  }, [activeTab, fetchCacheInfo]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -111,6 +190,19 @@ export function SettingsModal({
 
             <button
               type="button"
+              onClick={() => setActiveTab('advanced')}
+              className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer text-left ${
+                activeTab === 'advanced'
+                  ? 'bg-dc-accent text-white'
+                  : 'text-dc-text-muted hover:text-white hover:bg-dc-hover'
+              }`}
+            >
+              <Sliders className="w-4 h-4 shrink-0" />
+              <span>Advanced</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('about')}
               className={`flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer text-left ${
                 activeTab === 'about'
@@ -150,6 +242,7 @@ export function SettingsModal({
               {activeTab === 'archive' && 'Archive Information'}
               {activeTab === 'appearance' && 'Appearance Settings'}
               {activeTab === 'media' && 'Media & Link Settings'}
+              {activeTab === 'advanced' && 'Advanced Settings'}
               {activeTab === 'about' && 'About Discord Archiver'}
             </h2>
 
@@ -375,6 +468,109 @@ export function SettingsModal({
                         }`}
                       />
                     </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'advanced' && (
+              <div className="flex flex-col gap-6 max-w-xl">
+                <div>
+                  <h3 className="text-xs font-bold text-dc-text-muted uppercase tracking-wider mb-2">
+                    Local Cache
+                  </h3>
+                  <div className="bg-dc-darker p-4 rounded-lg border border-dc-input/40 flex flex-col gap-3">
+                    <div className="flex flex-col gap-1 text-xs">
+                      <span className="text-dc-text-muted text-[11px]">Cache Location:</span>
+                      <span className="text-white font-mono break-all select-text bg-dc-darkest p-2 rounded border border-dc-input/20">
+                        {cacheInfo?.path || 'Loading path…'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs pt-1">
+                      <div className="flex flex-col">
+                        <span className="text-dc-text-muted text-[11px]">Current Cache Size</span>
+                        <span className="text-white font-semibold text-sm">
+                          {cacheInfo ? formatBytes(cacheInfo.size_bytes) : 'Calculating…'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleOpenCacheFolder}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-dc-input hover:bg-dc-hover text-white transition-colors cursor-pointer"
+                        >
+                          <FolderOpen className="w-3.5 h-3.5" />
+                          <span>Open Folder</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearCache}
+                          disabled={isClearingCache}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 hover:border-red-500/50 transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{isClearingCache ? 'Clearing…' : 'Clear Cache'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="text-[11px] text-dc-text-muted leading-relaxed">
+                      Clearing local cache removes temporary unpacked files, decoded attachments, and network memory caches.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="text-xs font-bold text-dc-text-muted uppercase tracking-wider mb-2">
+                    Reset Settings
+                  </h3>
+                  <div className="bg-dc-darker p-4 rounded-lg border border-dc-input/40 flex flex-col gap-3">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs font-semibold text-white">
+                        Restore Default Configuration
+                      </span>
+                      <span className="text-[11px] text-dc-text-muted leading-relaxed">
+                        Reverts all settings to their initial values.
+                      </span>
+                    </div>
+
+                    {showResetConfirm ? (
+                      <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/30 flex flex-col gap-2">
+                        <div className="flex items-center gap-2 text-xs text-red-300 font-medium">
+                          <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                          <span>Are you sure you want to reset all settings to default?</span>
+                        </div>
+                        <div className="flex items-center gap-2 justify-end">
+                          <button
+                            type="button"
+                            onClick={() => setShowResetConfirm(false)}
+                            className="px-3 py-1.5 rounded text-xs font-medium bg-dc-dark hover:bg-dc-hover text-dc-text transition-colors cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleResetSettings}
+                            className="px-3 py-1.5 rounded text-xs font-medium bg-red-600 hover:bg-red-500 text-white transition-colors cursor-pointer"
+                          >
+                            Confirm Reset
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex justify-start">
+                        <button
+                          type="button"
+                          onClick={() => setShowResetConfirm(true)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 hover:border-red-500/50 transition-colors cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Reset All Settings to Default</span>
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
