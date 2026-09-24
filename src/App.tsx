@@ -7,6 +7,13 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { ConversationSearchModal } from './components/ConversationSearchModal';
+import {
+  RecentPackage,
+  getRecentPackages,
+  addRecentPackage,
+  removeRecentPackage,
+  clearRecentPackages,
+} from './recentPackages';
 
 export default function App() {
   const [dataIndex, setDataIndex] = useState<DataIndex | null>(null);
@@ -17,16 +24,22 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [recentPackages, setRecentPackages] = useState<RecentPackage[]>(getRecentPackages);
 
   const loadData = useCallback(async (path: string) => {
     setLoading(true);
     setError(null);
     try {
       const index: DataIndex = await invoke('load_data_package', { path });
+      const totalMessages =
+        index.servers.reduce((acc, s) => acc + s.channels.reduce((ca, c) => ca + c.message_count, 0), 0) +
+        index.direct_messages.reduce((acc, dm) => acc + dm.message_count, 0);
+
       setDataPath(path);
       setDataIndex(index);
       setSelectedServer('dms');
       setSelectedChannel(null);
+      setRecentPackages(addRecentPackage(path, totalMessages));
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Could not read that data package.');
     } finally {
@@ -137,6 +150,15 @@ export default function App() {
     return false;
   };
 
+  const handleRemoveRecent = useCallback((pathToRemove: string) => {
+    setRecentPackages(removeRecentPackage(pathToRemove));
+  }, []);
+
+  const handleClearRecent = useCallback(() => {
+    clearRecentPackages();
+    setRecentPackages([]);
+  }, []);
+
   const dropOverlay = isDragging && (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-dc-darkest/80 backdrop-blur-sm pointer-events-none">
       <div className="border-2 border-dashed border-dc-accent rounded-xl px-10 py-8 text-center bg-dc-darker/90">
@@ -153,6 +175,10 @@ export default function App() {
         <WelcomeScreen
           onOpenFolder={handleOpenFolder}
           onOpenZip={handleOpenZip}
+          recentPackages={recentPackages}
+          onOpenRecent={loadData}
+          onRemoveRecent={handleRemoveRecent}
+          onClearRecent={handleClearRecent}
           loading={loading}
           error={error}
         />
