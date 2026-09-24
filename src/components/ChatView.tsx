@@ -10,8 +10,9 @@ import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SearchFilters } from './SearchFilters';
 import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
 import { isAudio } from '../attachments';
-import { Image as ImageIcon } from 'lucide-react';
+import { Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
 import { MediaGallery } from './MediaGallery';
+import { useSettings } from '../settings';
 
 const PAGE_SIZE = 500;
 
@@ -31,6 +32,7 @@ interface ChatViewProps {
   userMap: Record<string, string>;
   onOpenDmByUserId?: (userId: string) => boolean;
   onOpenChannelById?: (channelId: string) => boolean;
+  onOpenSettings?: () => void;
 }
 
 export function ChatView({
@@ -39,7 +41,9 @@ export function ChatView({
   userMap,
   onOpenDmByUserId,
   onOpenChannelById,
+  onOpenSettings,
 }: ChatViewProps) {
+  const { timeFormat } = useSettings();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -708,6 +712,17 @@ export function ChatView({
             <span className="hidden sm:inline">Media</span>
           </button>
 
+          {onOpenSettings && (
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="p-1 rounded text-xs transition-colors cursor-pointer border bg-dc-dark text-dc-text-muted hover:text-white border-dc-input/60 hover:bg-dc-hover"
+              title="Settings (Ctrl+,)"
+            >
+              <SettingsIcon className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           {searchQuery && searchResults.length > 0 && (
             <button
               type="button"
@@ -827,6 +842,7 @@ export function ChatView({
                       onLinkContextMenu={handleLinkContextMenu}
                       onJumpToMessage={handleJumpToMessage}
                       onReplyContextMenu={handleReplyContextMenu}
+                      timeFormat={timeFormat}
                     />
                     {isLastItem && hasMoreNewer && (
                       <div className="flex justify-center pt-4 pb-2">
@@ -937,7 +953,7 @@ export function ChatView({
       )}
 
       {toastMessage && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 bg-[#202225] text-white text-xs px-4 py-2.5 rounded-md shadow-2xl border border-dc-input flex items-center gap-2 select-none pointer-events-none">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 bg-dc-dark text-white text-xs px-4 py-2.5 rounded-md shadow-2xl border border-dc-input flex items-center gap-2 select-none pointer-events-none">
           <span className="text-amber-400">⚠️</span>
           <span className="font-medium">{toastMessage}</span>
         </div>

@@ -62,8 +62,8 @@ function Spoiler({ children }: { children: React.ReactNode }) {
       onClick={() => setRevealed(true)}
       className={`rounded px-1 transition-all inline cursor-pointer select-none ${
         revealed
-          ? 'bg-[#202225]/50 text-inherit cursor-default select-text'
-          : 'bg-[#202225] hover:bg-[#27292d] text-transparent [&_*]:invisible'
+          ? 'bg-dc-dark/50 text-inherit cursor-default select-text'
+          : 'bg-dc-dark hover:bg-dc-hover text-transparent [&_*]:invisible'
       }`}
       title={revealed ? undefined : 'Spoiler (click to reveal)'}
     >
@@ -83,7 +83,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   };
 
   return (
-    <div className="relative my-1.5 rounded-md bg-[#2b2d31] border border-[#1e1f22] p-3 text-xs font-mono text-dc-text overflow-x-auto group">
+    <div className="relative my-1.5 rounded-md bg-dc-darker border border-dc-divider p-3 text-xs font-mono text-dc-text overflow-x-auto group">
       {lang && (
         <span className="absolute top-1.5 right-14 text-[10px] uppercase font-semibold text-dc-text-muted select-none">
           {lang}

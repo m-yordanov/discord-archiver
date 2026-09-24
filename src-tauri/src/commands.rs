@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use crate::archive::Source;
 use crate::models::{
@@ -6,7 +7,7 @@ use crate::models::{
     SearchResponse,
 };
 use crate::parser;
-use tauri::State;
+use tauri::{Manager, State};
 
 pub struct CachedChannel {
     pub folder_names: Vec<String>,
@@ -458,6 +459,103 @@ pub fn download_channel_media(
     })
 }
 
+#[derive(serde::Serialize)]
+pub struct CacheInfo {
+    pub path: String,
+    pub size_bytes: u64,
+}
+
+pub fn calculate_dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                total += calculate_dir_size(&p);
+            } else if let Ok(meta) = p.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+pub fn delete_dir_contents_safe(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                delete_dir_contents_safe(&path);
+                let _ = fs::remove_dir(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+pub fn resolve_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    if !cache_dir.exists() {
+        let _ = fs::create_dir_all(&cache_dir);
+    }
+    Ok(cache_dir)
+}
+
+#[tauri::command]
+pub fn get_cache_info(app: tauri::AppHandle) -> Result<CacheInfo, String> {
+    let dir = resolve_cache_dir(&app)?;
+    let size_bytes = calculate_dir_size(&dir);
+    Ok(CacheInfo {
+        path: dir.to_string_lossy().to_string(),
+        size_bytes,
+    })
+}
+
+#[tauri::command]
+pub fn clear_cache(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<CacheInfo, String> {
+    let dir = resolve_cache_dir(&app)?;
+    delete_dir_contents_safe(&dir);
+    crate::archive::remove_legacy_cache();
+    if let Ok(mut cache_guard) = state.channel_cache.lock() {
+        *cache_guard = None;
+    }
+    let size_bytes = calculate_dir_size(&dir);
+    Ok(CacheInfo {
+        path: dir.to_string_lossy().to_string(),
+        size_bytes,
+    })
+}
+
+#[tauri::command]
+pub fn open_cache_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = resolve_cache_dir(&app)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +642,22 @@ mod tests {
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("valid.png"), "valid.png");
         assert_eq!(sanitize_filename("bad/name:here?.jpg"), "bad_name_here_.jpg");
+    }
+
+    #[test]
+    fn test_calculate_dir_size_and_delete() {
+        let temp = std::env::temp_dir().join("test_discord_archiver_cache_test_dir");
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(temp.join("a.txt"), b"12345").unwrap();
+        fs::write(sub.join("b.txt"), b"1234567890").unwrap();
+
+        assert_eq!(calculate_dir_size(&temp), 15);
+        delete_dir_contents_safe(&temp);
+        assert_eq!(calculate_dir_size(&temp), 0);
+        let _ = fs::remove_dir_all(&temp);
     }
 }
 

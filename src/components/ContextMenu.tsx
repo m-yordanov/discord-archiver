@@ -68,7 +68,7 @@ export function ContextMenu({ x, y, items, onClose }: ContextMenuProps) {
     <div
       ref={menuRef}
       style={{ top: `${adjustedY}px`, left: `${adjustedX}px` }}
-      className="fixed z-50 min-w-[190px] bg-[#111214] border border-[#202225] rounded-md p-1.5 shadow-2xl flex flex-col gap-0.5 select-none text-xs text-dc-text"
+      className="fixed z-50 min-w-[190px] bg-dc-darker border border-dc-divider rounded-md p-1.5 shadow-2xl flex flex-col gap-0.5 select-none text-xs text-dc-text"
       onClick={(e) => e.stopPropagation()}
     >
       {items.map((item, index) => (

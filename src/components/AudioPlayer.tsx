@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { useResolvedUrl } from '../urlResolver';
 
 interface AudioPlayerProps {
   src: string;
@@ -51,6 +52,7 @@ export function AudioPlayer({
   const [waveform, setWaveform] = useState<number[]>(() => generateFallbackWaveform(src));
   const [hasError, setHasError] = useState(false);
 
+  const { resolvedUrl, reportError } = useResolvedUrl(src);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const waveformRef = useRef<HTMLDivElement | null>(null);
   const playerIdRef = useRef<string>(`audio-${Math.random().toString(36).slice(2)}`);
@@ -62,7 +64,7 @@ export function AudioPlayer({
 
     const decodeWaveform = async () => {
       try {
-        const response = await fetch(src);
+        const response = await fetch(resolvedUrl);
         if (!response.ok) return;
         const arrayBuffer = await response.arrayBuffer();
         const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -215,15 +217,18 @@ export function AudioPlayer({
   };
 
   return (
-    <div className="bg-[#2b2d31] hover:bg-[#313338] transition-colors rounded-2xl p-3 border border-dc-input/40 max-w-md w-full select-none shadow-sm flex flex-col gap-2">
+    <div className="bg-dc-darker hover:bg-dc-hover transition-colors rounded-2xl p-3 border border-dc-input/40 max-w-md w-full select-none shadow-sm flex flex-col gap-2">
       <audio
         ref={audioRef}
-        src={src}
+        src={resolvedUrl}
         preload="metadata"
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={handleEnded}
-        onError={() => setHasError(true)}
+        onError={() => {
+          reportError();
+          setHasError(true);
+        }}
       />
 
       <div className="flex items-center justify-between text-xs text-dc-text-muted px-1">
@@ -238,7 +243,7 @@ export function AudioPlayer({
           <button
             type="button"
             onClick={cycleSpeed}
-            className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#1e1f22] hover:bg-dc-hover text-dc-text hover:text-white transition-colors border border-dc-input/30 cursor-pointer"
+            className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-dc-dark hover:bg-dc-hover text-dc-text hover:text-white transition-colors border border-dc-input/30 cursor-pointer"
             title="Change playback speed (0.75x, 1x, 1.25x, 1.5x, 2x)"
           >
             {currentSpeed}x
