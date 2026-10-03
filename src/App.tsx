@@ -114,7 +114,7 @@ export default function App() {
       setStatsLoading(true);
       setStatsError(null);
       try {
-        const result: PackageStats = await invoke('get_stats', { path: dataPath });
+        const result: PackageStats = await invoke('get_stats');
         if (dataPathRef.current === dataPath) setStats(result);
       } catch (e) {
         if (dataPathRef.current === dataPath) {

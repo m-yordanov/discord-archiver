@@ -1,6 +1,4 @@
-use crate::archive::Source;
-use crate::models::RawMessage;
-use crate::parser;
+use crate::models::DataIndex;
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -64,20 +62,11 @@ pub fn epoch_seconds(timestamp: &str) -> Option<i64> {
     Some(seconds - offset)
 }
 
-fn hourly_buckets(source: &mut Source, folders: &[String]) -> Vec<HourBucket> {
+fn merge_hours<'a>(maps: impl Iterator<Item = &'a HashMap<i64, u32>>) -> Vec<HourBucket> {
     let mut counts: HashMap<i64, u32> = HashMap::new();
-
-    for folder in folders {
-        let Some(text) = source.read_channel(folder, "messages.json") else {
-            continue;
-        };
-        let Ok(messages) = serde_json::from_str::<Vec<RawMessage>>(&text) else {
-            continue;
-        };
-        for message in messages {
-            if let Some(seconds) = epoch_seconds(&message.timestamp) {
-                *counts.entry(seconds.div_euclid(3600)).or_insert(0) += 1;
-            }
+    for map in maps {
+        for (&hour, &count) in map {
+            *counts.entry(hour).or_insert(0) += count;
         }
     }
 
@@ -89,10 +78,10 @@ fn hourly_buckets(source: &mut Source, folders: &[String]) -> Vec<HourBucket> {
     buckets
 }
 
-pub fn compute_stats(path: &str) -> Result<PackageStats, String> {
-    let index = parser::parse_data_package(path)?;
-    let mut source = Source::open(path)?;
-
+pub fn build_stats(
+    index: &DataIndex,
+    folder_hours: &HashMap<String, HashMap<i64, u32>>,
+) -> PackageStats {
     let listed = index
         .direct_messages
         .iter()
@@ -102,7 +91,6 @@ pub fn compute_stats(path: &str) -> Result<PackageStats, String> {
     let mut total_messages = 0;
 
     for channel in listed {
-        let hours = hourly_buckets(&mut source, &channel.folder_names);
         total_messages += channel.message_count;
         channels.push(ChannelStats {
             id: channel.id.clone(),
@@ -110,16 +98,21 @@ pub fn compute_stats(path: &str) -> Result<PackageStats, String> {
             channel_type: channel.channel_type.clone(),
             folder_names: channel.folder_names.clone(),
             message_count: channel.message_count,
-            hours,
+            hours: merge_hours(
+                channel
+                    .folder_names
+                    .iter()
+                    .filter_map(|folder| folder_hours.get(folder)),
+            ),
         });
     }
 
-    Ok(PackageStats {
+    PackageStats {
         total_messages,
-        username: index.username,
+        username: index.username.clone(),
         server_count: index.servers.len(),
         channels,
-    })
+    }
 }
 
 #[cfg(test)]
