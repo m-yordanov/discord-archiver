@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -29,7 +29,11 @@ export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [recentPackages, setRecentPackages] = useState<RecentPackage[]>(getRecentPackages);
 
+  const loadingPackageRef = useRef(false);
+
   const loadData = useCallback(async (path: string) => {
+    if (loadingPackageRef.current) return;
+    loadingPackageRef.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -46,6 +50,7 @@ export default function App() {
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Could not read that data package.');
     } finally {
+      loadingPackageRef.current = false;
       setLoading(false);
     }
   }, []);

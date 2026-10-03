@@ -73,6 +73,8 @@ export function ChatView({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const shouldScrollToBottomRef = useRef(true);
   const highlightTimerRef = useRef<number | null>(null);
+  const activeChannelRef = useRef(selectedChannel);
+  activeChannelRef.current = selectedChannel;
 
   useEffect(() => {
     return () => {
@@ -103,6 +105,7 @@ export function ChatView({
     }
 
     shouldScrollToBottomRef.current = true;
+    let cancelled = false;
 
     const loadInitialMessages = async () => {
       setLoading(true);
@@ -114,17 +117,19 @@ export function ChatView({
           limit: PAGE_SIZE,
           offset: null,
         });
+        if (cancelled) return;
 
         setMessages(response.messages);
         setTotalMessages(response.total);
         setLoadedOffset(Math.max(0, response.total - response.messages.length));
       } catch (e) {
+        if (cancelled) return;
         setMessages([]);
         setTotalMessages(0);
         setLoadedOffset(0);
         setLoadError(typeof e === 'string' ? e : 'Could not read this channel.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
@@ -134,6 +139,10 @@ export function ChatView({
     setTotalSearchMatches(0);
     setCurrentMatchIdx(0);
     setViewMode('chat');
+
+    return () => {
+      cancelled = true;
+    };
   }, [selectedChannel, dataPath]);
 
   const loadOlderMessages = useCallback(async () => {
@@ -154,6 +163,7 @@ export function ChatView({
         limit: fetchLimit,
         offset: fetchOffset,
       });
+      if (activeChannelRef.current !== selectedChannel) return;
 
       setMessages(prev => [...response.messages, ...prev]);
       setLoadedOffset(fetchOffset);
@@ -166,7 +176,7 @@ export function ChatView({
         }
       });
     } catch {
-      showToast('Could not load older messages');
+      if (activeChannelRef.current === selectedChannel) showToast('Could not load older messages');
     } finally {
       setLoadingOlder(false);
     }
@@ -187,11 +197,12 @@ export function ChatView({
         limit: fetchLimit,
         offset: fetchOffset,
       });
+      if (activeChannelRef.current !== selectedChannel) return;
 
       setMessages(prev => [...prev, ...response.messages]);
       setTotalMessages(response.total);
     } catch {
-      showToast('Could not load newer messages');
+      if (activeChannelRef.current === selectedChannel) showToast('Could not load newer messages');
     } finally {
       setLoadingNewer(false);
     }
@@ -207,14 +218,15 @@ export function ChatView({
         limit: PAGE_SIZE,
         offset: null,
       });
+      if (activeChannelRef.current !== selectedChannel) return;
       setMessages(response.messages);
       setTotalMessages(response.total);
       setLoadedOffset(Math.max(0, response.total - response.messages.length));
       shouldScrollToBottomRef.current = true;
     } catch {
-      showToast('Could not jump to present');
+      if (activeChannelRef.current === selectedChannel) showToast('Could not jump to present');
     } finally {
-      setLoading(false);
+      if (activeChannelRef.current === selectedChannel) setLoading(false);
     }
   }, [selectedChannel, dataPath, showToast]);
 
@@ -287,6 +299,7 @@ export function ChatView({
     }
 
     setIsSearching(true);
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
         const response: SearchResponse = await invoke('search_channel_messages', {
@@ -299,6 +312,7 @@ export function ChatView({
           attachmentMode: filters.attachment || null,
           limit: 500,
         });
+        if (cancelled) return;
 
         setSearchResults(response.matches);
         setTotalSearchMatches(response.total_matches);
@@ -319,6 +333,7 @@ export function ChatView({
               limit: PAGE_SIZE,
               offset: fetchOffset,
             });
+            if (cancelled) return;
             setMessages(resp.messages);
             setTotalMessages(resp.total);
             setLoadedOffset(fetchOffset);
@@ -334,15 +349,19 @@ export function ChatView({
           setCurrentMatchIdx(0);
         }
       } catch {
+        if (cancelled) return;
         setSearchResults([]);
         setTotalSearchMatches(0);
         setCurrentMatchIdx(0);
       } finally {
-        setIsSearching(false);
+        if (!cancelled) setIsSearching(false);
       }
     }, 250);
 
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [
     searchQuery,
     filters.dateMode,
@@ -381,6 +400,7 @@ export function ChatView({
           limit: PAGE_SIZE,
           offset: fetchOffset,
         });
+        if (activeChannelRef.current !== selectedChannel) return;
         setMessages(response.messages);
         setTotalMessages(response.total);
         setLoadedOffset(fetchOffset);
@@ -395,9 +415,9 @@ export function ChatView({
           }
         });
       } catch {
-        showToast('Could not load messages around this result');
+        if (activeChannelRef.current === selectedChannel) showToast('Could not load messages around this result');
       } finally {
-        setLoading(false);
+        if (activeChannelRef.current === selectedChannel) setLoading(false);
       }
     },
     [searchResults, dataPath, selectedChannel, filteredMessages, virtualizer, showToast]
@@ -429,6 +449,7 @@ export function ChatView({
           attachmentMode: null,
           limit: 1,
         });
+        if (activeChannelRef.current !== selectedChannel) return;
 
         const match = searchRes.matches.find(m => m.message.id === messageId);
         if (!match) {
@@ -444,6 +465,7 @@ export function ChatView({
           limit: PAGE_SIZE,
           offset: fetchOffset,
         });
+        if (activeChannelRef.current !== selectedChannel) return;
         setMessages(response.messages);
         setTotalMessages(response.total);
         setLoadedOffset(fetchOffset);
@@ -458,9 +480,9 @@ export function ChatView({
           }
         });
       } catch {
-        showToast(`Could not load referenced message (${messageId})`);
+        if (activeChannelRef.current === selectedChannel) showToast(`Could not load referenced message (${messageId})`);
       } finally {
-        setLoading(false);
+        if (activeChannelRef.current === selectedChannel) setLoading(false);
       }
     },
     [filteredMessages, dataPath, selectedChannel, virtualizer, showToast]
