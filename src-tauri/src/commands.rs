@@ -7,7 +7,7 @@ use crate::models::{
     SearchResponse,
 };
 use crate::parser;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager};
 
 pub struct CachedChannel {
     pub folder_names: Vec<String>,
@@ -28,33 +28,22 @@ impl AppState {
     }
 }
 
-#[tauri::command]
-pub fn load_data_package(path: String, state: State<'_, AppState>) -> Result<DataIndex, String> {
-    let (index, source) = parser::parse_package_source(&path)?;
-    {
-        let mut guard = state.source.lock().map_err(|e| e.to_string())?;
-        *guard = Some(source);
-    }
-    {
-        let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
-        *cache_guard = None;
-    }
-    Ok(index)
+async fn run_blocking<T, F>(app: AppHandle, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppState) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || task(app.state::<AppState>().inner()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-pub fn get_messages(
-    data_path: Option<String>,
-    folder_names: Vec<String>,
-    page: Option<usize>,
-    page_size: Option<usize>,
-    offset: Option<usize>,
-    limit: Option<usize>,
-    state: State<'_, AppState>,
-) -> Result<MessagesResponse, String> {
-    let page_val = page.unwrap_or(0);
-    let page_size_val = page_size.unwrap_or(0);
-
+fn with_channel_messages<T>(
+    state: &AppState,
+    data_path: Option<&str>,
+    folder_names: &[String],
+    read: impl FnOnce(&[Message]) -> T,
+) -> Result<T, String> {
     let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
 
     let is_cached = cache_guard
@@ -65,9 +54,9 @@ pub fn get_messages(
         let (texts, default_user_id) = {
             let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
             if let Some(source) = source_guard.as_mut() {
-                parser::read_channel_texts_from_source(source, &folder_names)
-            } else if let Some(path) = &data_path {
-                parser::read_channel_texts_from_path(path, &folder_names)?
+                parser::read_channel_texts_from_source(source, folder_names)
+            } else if let Some(path) = data_path {
+                parser::read_channel_texts_from_path(path, folder_names)?
             } else {
                 return Err("No data package loaded.".to_string());
             }
@@ -75,36 +64,67 @@ pub fn get_messages(
 
         let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
         *cache_guard = Some(CachedChannel {
-            folder_names: folder_names.clone(),
+            folder_names: folder_names.to_vec(),
             messages,
         });
     }
 
-    let cached = cache_guard.as_ref().unwrap();
-    Ok(parser::slice_messages(
-        &cached.messages,
-        offset,
-        limit,
-        page_val,
-        page_size_val,
-    ))
+    Ok(read(&cache_guard.as_ref().unwrap().messages))
 }
 
 #[tauri::command]
-pub fn get_raw_message(
+pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex, String> {
+    run_blocking(app, move |state| {
+        let (index, source) = parser::parse_package_source(&path)?;
+        *state.source.lock().map_err(|e| e.to_string())? = Some(source);
+        *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
+        Ok(index)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_messages(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    app: AppHandle,
+) -> Result<MessagesResponse, String> {
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+            parser::slice_messages(
+                messages,
+                offset,
+                limit,
+                page.unwrap_or(0),
+                page_size.unwrap_or(0),
+            )
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_raw_message(
     data_path: Option<String>,
     folder_names: Vec<String>,
     message_id: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<String, String> {
-    let mut guard = state.source.lock().map_err(|e| e.to_string())?;
-    if let Some(source) = guard.as_mut() {
-        parser::load_raw_message_from_source(source, &folder_names, &message_id)
-    } else if let Some(path) = data_path {
-        parser::load_raw_message(&path, &folder_names, &message_id)
-    } else {
-        Err("No data package loaded.".to_string())
-    }
+    run_blocking(app, move |state| {
+        let mut guard = state.source.lock().map_err(|e| e.to_string())?;
+        if let Some(source) = guard.as_mut() {
+            parser::load_raw_message_from_source(source, &folder_names, &message_id)
+        } else if let Some(path) = data_path {
+            parser::load_raw_message(&path, &folder_names, &message_id)
+        } else {
+            Err("No data package loaded.".to_string())
+        }
+    })
+    .await
 }
 
 fn is_image(url: &str) -> bool {
@@ -205,7 +225,7 @@ fn matches_date(
 }
 
 #[tauri::command]
-pub fn search_channel_messages(
+pub async fn search_channel_messages(
     data_path: Option<String>,
     folder_names: Vec<String>,
     query: String,
@@ -214,44 +234,37 @@ pub fn search_channel_messages(
     date_to: Option<String>,
     attachment_mode: Option<String>,
     limit: Option<usize>,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<SearchResponse, String> {
-    let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+            search_messages(
+                messages,
+                &query,
+                date_mode.as_deref(),
+                date_from.as_deref(),
+                date_to.as_deref(),
+                attachment_mode.as_deref(),
+                limit,
+            )
+        })
+    })
+    .await
+}
 
-    let is_cached = cache_guard
-        .as_ref()
-        .is_some_and(|c| c.folder_names == folder_names);
-
-    if !is_cached {
-        let (texts, default_user_id) = {
-            let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
-            if let Some(source) = source_guard.as_mut() {
-                parser::read_channel_texts_from_source(source, &folder_names)
-            } else if let Some(path) = &data_path {
-                parser::read_channel_texts_from_path(path, &folder_names)?
-            } else {
-                return Err("No data package loaded.".to_string());
-            }
-        };
-
-        let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
-        *cache_guard = Some(CachedChannel {
-            folder_names: folder_names.clone(),
-            messages,
-        });
-    }
-
-    let cached = cache_guard.as_ref().unwrap();
-
+fn search_messages(
+    messages: &[Message],
+    query: &str,
+    d_mode: Option<&str>,
+    d_from: Option<&str>,
+    d_to: Option<&str>,
+    a_mode: Option<&str>,
+    limit: Option<usize>,
+) -> SearchResponse {
     let q = query.trim().to_lowercase();
-    let d_mode = date_mode.as_deref();
-    let d_from = date_from.as_deref();
-    let d_to = date_to.as_deref();
-    let a_mode = attachment_mode.as_deref();
-
     let mut matches = Vec::new();
 
-    for (idx, msg) in cached.messages.iter().enumerate() {
+    for (idx, msg) in messages.iter().enumerate() {
         if !matches_attachment(msg, a_mode) {
             continue;
         }
@@ -290,10 +303,10 @@ pub fn search_channel_messages(
         }
     }
 
-    Ok(SearchResponse {
+    SearchResponse {
         matches,
         total_matches,
-    })
+    }
 }
 
 pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
@@ -334,38 +347,15 @@ pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
 }
 
 #[tauri::command]
-pub fn get_channel_media(
+pub async fn get_channel_media(
     data_path: Option<String>,
     folder_names: Vec<String>,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<Vec<ChannelMediaItem>, String> {
-    let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
-
-    let is_cached = cache_guard
-        .as_ref()
-        .is_some_and(|c| c.folder_names == folder_names);
-
-    if !is_cached {
-        let (texts, default_user_id) = {
-            let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
-            if let Some(source) = source_guard.as_mut() {
-                parser::read_channel_texts_from_source(source, &folder_names)
-            } else if let Some(path) = &data_path {
-                parser::read_channel_texts_from_path(path, &folder_names)?
-            } else {
-                return Err("No data package loaded.".to_string());
-            }
-        };
-
-        let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
-        *cache_guard = Some(CachedChannel {
-            folder_names: folder_names.clone(),
-            messages,
-        });
-    }
-
-    let cached = cache_guard.as_ref().unwrap();
-    Ok(extract_media_items(&cached.messages))
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)
+    })
+    .await
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -384,13 +374,24 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 #[tauri::command]
-pub fn download_channel_media(
+pub async fn download_channel_media(
     data_path: Option<String>,
     folder_names: Vec<String>,
     save_path: String,
-    state: State<'_, AppState>,
+    app: AppHandle,
 ) -> Result<DownloadResult, String> {
-    let media_items = get_channel_media(data_path, folder_names, state)?;
+    run_blocking(app, move |state| {
+        let media_items =
+            with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)?;
+        write_media_zip(&media_items, save_path)
+    })
+    .await
+}
+
+fn write_media_zip(
+    media_items: &[ChannelMediaItem],
+    save_path: String,
+) -> Result<DownloadResult, String> {
     if media_items.is_empty() {
         return Ok(DownloadResult {
             success: true,
@@ -502,29 +503,31 @@ pub fn resolve_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(cache_dir)
 }
 
-#[tauri::command]
-pub fn get_cache_info(app: tauri::AppHandle) -> Result<CacheInfo, String> {
-    let dir = resolve_cache_dir(&app)?;
-    let size_bytes = calculate_dir_size(&dir);
-    Ok(CacheInfo {
+fn cache_info(dir: &Path) -> CacheInfo {
+    CacheInfo {
         path: dir.to_string_lossy().to_string(),
-        size_bytes,
-    })
+        size_bytes: calculate_dir_size(dir),
+    }
 }
 
 #[tauri::command]
-pub fn clear_cache(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<CacheInfo, String> {
+pub async fn get_cache_info(app: AppHandle) -> Result<CacheInfo, String> {
     let dir = resolve_cache_dir(&app)?;
-    delete_dir_contents_safe(&dir);
-    crate::archive::remove_legacy_cache();
-    if let Ok(mut cache_guard) = state.channel_cache.lock() {
-        *cache_guard = None;
-    }
-    let size_bytes = calculate_dir_size(&dir);
-    Ok(CacheInfo {
-        path: dir.to_string_lossy().to_string(),
-        size_bytes,
+    run_blocking(app, move |_| Ok(cache_info(&dir))).await
+}
+
+#[tauri::command]
+pub async fn clear_cache(app: AppHandle) -> Result<CacheInfo, String> {
+    let dir = resolve_cache_dir(&app)?;
+    run_blocking(app, move |state| {
+        delete_dir_contents_safe(&dir);
+        crate::archive::remove_legacy_cache();
+        if let Ok(mut cache_guard) = state.channel_cache.lock() {
+            *cache_guard = None;
+        }
+        Ok(cache_info(&dir))
     })
+    .await
 }
 
 #[tauri::command]
