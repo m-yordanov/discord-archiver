@@ -22,6 +22,7 @@ const ATTACHMENT_MODES: { value: AttachmentMode; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'images', label: 'Images' },
   { value: 'videos', label: 'Videos' },
+  { value: 'audio', label: 'Audio' },
   { value: 'files', label: 'Files' },
 ];
 
@@ -98,7 +99,7 @@ export function SearchFilters({ filters, onChange, shownCount, totalCount }: Sea
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 z-50 w-[280px] bg-[#111214] border border-[#202225] rounded-md shadow-2xl p-3 flex flex-col gap-3 select-none">
+        <div className="absolute right-0 top-full mt-1.5 z-50 w-[280px] bg-dc-darker border border-dc-divider rounded-md shadow-2xl p-3 flex flex-col gap-3 select-none">
           <div className="flex flex-col gap-1.5">
             <span className="text-[10px] uppercase tracking-wide text-dc-text-muted font-semibold">
               Date
@@ -134,7 +135,7 @@ export function SearchFilters({ filters, onChange, shownCount, totalCount }: Sea
               options={ATTACHMENT_MODES}
               value={filters.attachment}
               onChange={attachment => update({ attachment })}
-              columns="grid-cols-3"
+              columns="grid-cols-4"
             />
           </div>
 

@@ -1,23 +1,673 @@
-use crate::models::{DataIndex, MessagesResponse};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use crate::archive::Source;
+use crate::models::{
+    ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
+    SearchResponse,
+};
 use crate::parser;
 use crate::stats::{self, PackageStats};
+use tauri::{AppHandle, Manager};
 
-#[tauri::command]
-pub fn load_data_package(path: String) -> Result<DataIndex, String> {
-    parser::parse_data_package(&path)
+pub struct CachedChannel {
+    pub folder_names: Vec<String>,
+    pub messages: Vec<Message>,
+}
+
+pub struct AppState {
+    pub source: Mutex<Option<Source>>,
+    pub channel_cache: Mutex<Option<CachedChannel>>,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            source: Mutex::new(None),
+            channel_cache: Mutex::new(None),
+        }
+    }
+}
+
+async fn run_blocking<T, F>(app: AppHandle, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppState) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || task(app.state::<AppState>().inner()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn with_channel_messages<T>(
+    state: &AppState,
+    data_path: Option<&str>,
+    folder_names: &[String],
+    read: impl FnOnce(&[Message]) -> T,
+) -> Result<T, String> {
+    let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
+
+    let is_cached = cache_guard
+        .as_ref()
+        .is_some_and(|c| c.folder_names == folder_names);
+
+    if !is_cached {
+        let (texts, default_user_id) = {
+            let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
+            if let Some(source) = source_guard.as_mut() {
+                parser::read_channel_texts_from_source(source, folder_names)
+            } else if let Some(path) = data_path {
+                parser::read_channel_texts_from_path(path, folder_names)?
+            } else {
+                return Err("No data package loaded.".to_string());
+            }
+        };
+
+        let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
+        *cache_guard = Some(CachedChannel {
+            folder_names: folder_names.to_vec(),
+            messages,
+        });
+    }
+
+    Ok(read(&cache_guard.as_ref().unwrap().messages))
 }
 
 #[tauri::command]
-pub fn get_messages(data_path: String, folder_name: String, page: usize, page_size: usize) -> Result<MessagesResponse, String> {
-    parser::load_messages(&data_path, &folder_name, page, page_size)
+pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex, String> {
+    run_blocking(app, move |state| {
+        let (index, source) = parser::parse_package_source(&path)?;
+        *state.source.lock().map_err(|e| e.to_string())? = Some(source);
+        *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
+        Ok(index)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_raw_message(data_path: String, folder_name: String, message_id: String) -> Result<String, String> {
-    parser::load_raw_message(&data_path, &folder_name, &message_id)
+pub async fn get_messages(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    app: AppHandle,
+) -> Result<MessagesResponse, String> {
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+            parser::slice_messages(
+                messages,
+                offset,
+                limit,
+                page.unwrap_or(0),
+                page_size.unwrap_or(0),
+            )
+        })
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn get_stats(path: String) -> Result<PackageStats, String> {
-    stats::compute_stats(&path)
+pub async fn get_raw_message(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    message_id: String,
+    app: AppHandle,
+) -> Result<String, String> {
+    run_blocking(app, move |state| {
+        let mut guard = state.source.lock().map_err(|e| e.to_string())?;
+        if let Some(source) = guard.as_mut() {
+            parser::load_raw_message_from_source(source, &folder_names, &message_id)
+        } else if let Some(path) = data_path {
+            parser::load_raw_message(&path, &folder_names, &message_id)
+        } else {
+            Err("No data package loaded.".to_string())
+        }
+    })
+    .await
 }
+
+#[tauri::command]
+pub async fn get_stats(path: String, app: AppHandle) -> Result<PackageStats, String> {
+    run_blocking(app, move |_| stats::compute_stats(&path)).await
+}
+
+fn is_image(url: &str) -> bool {
+    let clean = url.split('?').next().unwrap_or(url).to_lowercase();
+    clean.ends_with(".png")
+        || clean.ends_with(".jpg")
+        || clean.ends_with(".jpeg")
+        || clean.ends_with(".gif")
+        || clean.ends_with(".webp")
+        || clean.ends_with(".bmp")
+        || clean.ends_with(".svg")
+}
+
+fn is_video(url: &str) -> bool {
+    let clean = url.split('?').next().unwrap_or(url).to_lowercase();
+    clean.ends_with(".mp4")
+        || clean.ends_with(".webm")
+        || clean.ends_with(".mov")
+        || clean.ends_with(".mkv")
+}
+
+fn is_audio(url: &str) -> bool {
+    let clean = url.split('?').next().unwrap_or(url).to_lowercase();
+    clean.ends_with(".mp3")
+        || clean.ends_with(".ogg")
+        || clean.ends_with(".wav")
+        || clean.ends_with(".m4a")
+        || clean.ends_with(".aac")
+        || clean.ends_with(".flac")
+        || clean.ends_with(".opus")
+        || clean.ends_with(".oga")
+        || clean.contains("voice-message")
+        || clean.contains("voice_message")
+}
+
+fn is_other_file(url: &str) -> bool {
+    !is_image(url) && !is_video(url) && !is_audio(url)
+}
+
+fn matches_attachment(msg: &Message, mode: Option<&str>) -> bool {
+    match mode {
+        Some("has") => !msg.attachments.is_empty(),
+        Some("none") => msg.attachments.is_empty(),
+        Some("images") => msg.attachments.iter().any(|a| is_image(a)),
+        Some("videos") => msg.attachments.iter().any(|a| is_video(a)),
+        Some("audio") => {
+            msg.attachments.iter().any(|a| is_audio(a)) || msg.message_type == "VOICE_MESSAGE"
+        }
+        Some("files") => msg.attachments.iter().any(|a| is_other_file(a)),
+        _ => true,
+    }
+}
+
+fn matches_date(
+    timestamp: &str,
+    mode: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> bool {
+    let mode = mode.unwrap_or("any");
+    if mode == "any" {
+        return true;
+    }
+
+    let ts = timestamp.replace(' ', "T");
+    let ts_prefix = if ts.len() >= 10 { &ts[..10] } else { &ts };
+
+    match mode {
+        "before" => {
+            if let Some(f) = from {
+                if !f.is_empty() {
+                    return ts_prefix <= f;
+                }
+            }
+            true
+        }
+        "after" => {
+            if let Some(f) = from {
+                if !f.is_empty() {
+                    return ts_prefix >= f;
+                }
+            }
+            true
+        }
+        "between" => {
+            let ok_from = match from {
+                Some(f) if !f.is_empty() => ts_prefix >= f,
+                _ => true,
+            };
+            let ok_to = match to {
+                Some(t) if !t.is_empty() => ts_prefix <= t,
+                _ => true,
+            };
+            ok_from && ok_to
+        }
+        _ => true,
+    }
+}
+
+#[tauri::command]
+pub async fn search_channel_messages(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    query: String,
+    date_mode: Option<String>,
+    date_from: Option<String>,
+    date_to: Option<String>,
+    attachment_mode: Option<String>,
+    limit: Option<usize>,
+    app: AppHandle,
+) -> Result<SearchResponse, String> {
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+            search_messages(
+                messages,
+                &query,
+                date_mode.as_deref(),
+                date_from.as_deref(),
+                date_to.as_deref(),
+                attachment_mode.as_deref(),
+                limit,
+            )
+        })
+    })
+    .await
+}
+
+fn search_messages(
+    messages: &[Message],
+    query: &str,
+    d_mode: Option<&str>,
+    d_from: Option<&str>,
+    d_to: Option<&str>,
+    a_mode: Option<&str>,
+    limit: Option<usize>,
+) -> SearchResponse {
+    let q = query.trim().to_lowercase();
+    let mut matches = Vec::new();
+
+    for (idx, msg) in messages.iter().enumerate() {
+        if !matches_attachment(msg, a_mode) {
+            continue;
+        }
+
+        if !matches_date(&msg.timestamp, d_mode, d_from, d_to) {
+            continue;
+        }
+
+        let is_query_match = if q.is_empty() {
+            true
+        } else {
+            msg.contents.to_lowercase().contains(&q)
+                || msg.id.contains(&q)
+                || msg.attachments.iter().any(|a| a.to_lowercase().contains(&q))
+                || msg.stickers.iter().any(|s| s.name.to_lowercase().contains(&q) || s.id.contains(&q))
+                || msg.embeds.iter().any(|e| {
+                    [e.title.as_deref(), e.description.as_deref(), e.provider_name.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .any(|f| f.to_lowercase().contains(&q))
+                })
+        };
+
+        if is_query_match {
+            matches.push(SearchMatch {
+                message: msg.clone(),
+                total_index: idx,
+            });
+        }
+    }
+
+    let total_matches = matches.len();
+    if let Some(lim) = limit {
+        if lim > 0 && matches.len() > lim {
+            matches.truncate(lim);
+        }
+    }
+
+    SearchResponse {
+        matches,
+        total_matches,
+    }
+}
+
+pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
+    let mut items = Vec::new();
+    for msg in messages {
+        for url in &msg.attachments {
+            let filename = url
+                .split('?')
+                .next()
+                .unwrap_or(url)
+                .split('/')
+                .last()
+                .unwrap_or("file")
+                .to_string();
+
+            let media_type = if is_image(url) {
+                "image"
+            } else if is_video(url) {
+                "video"
+            } else if is_audio(url) || msg.message_type == "VOICE_MESSAGE" {
+                "audio"
+            } else {
+                "file"
+            }
+            .to_string();
+
+            items.push(ChannelMediaItem {
+                url: url.clone(),
+                message_id: msg.id.clone(),
+                author: msg.author.clone(),
+                timestamp: msg.timestamp.clone(),
+                filename,
+                media_type,
+            });
+        }
+    }
+    items
+}
+
+#[tauri::command]
+pub async fn get_channel_media(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    app: AppHandle,
+) -> Result<Vec<ChannelMediaItem>, String> {
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)
+    })
+    .await
+}
+
+fn sanitize_filename(name: &str) -> String {
+    let sanitized: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            other => other,
+        })
+        .collect();
+    if sanitized.trim().is_empty() {
+        "file".to_string()
+    } else {
+        sanitized
+    }
+}
+
+#[tauri::command]
+pub async fn download_channel_media(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    save_path: String,
+    app: AppHandle,
+) -> Result<DownloadResult, String> {
+    run_blocking(app, move |state| {
+        let media_items =
+            with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)?;
+        write_media_zip(&media_items, save_path)
+    })
+    .await
+}
+
+fn write_media_zip(
+    media_items: &[ChannelMediaItem],
+    save_path: String,
+) -> Result<DownloadResult, String> {
+    if media_items.is_empty() {
+        return Ok(DownloadResult {
+            success: true,
+            count: 0,
+            file_path: save_path,
+            total_bytes: 0,
+        });
+    }
+
+    let file = fs::File::create(&save_path)
+        .map_err(|e| format!("Could not create zip file at {}: {}", save_path, e))?;
+    let mut zip_writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut downloaded_count = 0;
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (idx, item) in media_items.iter().enumerate() {
+        let clean_name = sanitize_filename(&item.filename);
+        let mut entry_name = format!("{:03}_{}", idx + 1, clean_name);
+        let mut counter = 1;
+        while seen_names.contains(&entry_name) {
+            entry_name = format!("{:03}_{}_{}", idx + 1, counter, clean_name);
+            counter += 1;
+        }
+        seen_names.insert(entry_name.clone());
+
+        let bytes: Option<Vec<u8>> = if item.url.starts_with("http://") || item.url.starts_with("https://") {
+            let res = ureq::get(&item.url).call();
+            match res {
+                Ok(mut r) => {
+                    let mut buf = Vec::new();
+                    use std::io::Read;
+                    if r.body_mut().as_reader().read_to_end(&mut buf).is_ok() {
+                        Some(buf)
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => None,
+            }
+        } else {
+            fs::read(&item.url).ok()
+        };
+
+        if let Some(data) = bytes {
+            use std::io::Write;
+            if zip_writer.start_file(&entry_name, options).is_ok() {
+                if zip_writer.write_all(&data).is_ok() {
+                    downloaded_count += 1;
+                }
+            }
+        }
+    }
+
+    zip_writer.finish().map_err(|e| format!("Could not finalize zip: {}", e))?;
+
+    let total_bytes = fs::metadata(&save_path).map(|m| m.len()).unwrap_or(0);
+
+    Ok(DownloadResult {
+        success: true,
+        count: downloaded_count,
+        file_path: save_path,
+        total_bytes,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct CacheInfo {
+    pub path: String,
+    pub size_bytes: u64,
+}
+
+pub fn calculate_dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                total += calculate_dir_size(&p);
+            } else if let Ok(meta) = p.metadata() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+pub fn delete_dir_contents_safe(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                delete_dir_contents_safe(&path);
+                let _ = fs::remove_dir(&path);
+            } else {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+pub fn resolve_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    if !cache_dir.exists() {
+        let _ = fs::create_dir_all(&cache_dir);
+    }
+    Ok(cache_dir)
+}
+
+fn cache_info(dir: &Path) -> CacheInfo {
+    CacheInfo {
+        path: dir.to_string_lossy().to_string(),
+        size_bytes: calculate_dir_size(dir),
+    }
+}
+
+#[tauri::command]
+pub async fn get_cache_info(app: AppHandle) -> Result<CacheInfo, String> {
+    let dir = resolve_cache_dir(&app)?;
+    run_blocking(app, move |_| Ok(cache_info(&dir))).await
+}
+
+#[tauri::command]
+pub async fn clear_cache(app: AppHandle) -> Result<CacheInfo, String> {
+    let dir = resolve_cache_dir(&app)?;
+    run_blocking(app, move |state| {
+        delete_dir_contents_safe(&dir);
+        crate::archive::remove_legacy_cache();
+        if let Ok(mut cache_guard) = state.channel_cache.lock() {
+            *cache_guard = None;
+        }
+        Ok(cache_info(&dir))
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn open_cache_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = resolve_cache_dir(&app)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matches_date_logic() {
+        assert!(matches_date("2023-05-15 12:00:00", Some("before"), Some("2023-05-16"), None));
+        assert!(!matches_date("2023-05-17 12:00:00", Some("before"), Some("2023-05-16"), None));
+        assert!(matches_date("2023-05-17 12:00:00", Some("after"), Some("2023-05-16"), None));
+        assert!(!matches_date("2023-05-15 12:00:00", Some("after"), Some("2023-05-16"), None));
+        assert!(matches_date("2023-05-16 12:00:00", Some("between"), Some("2023-05-10"), Some("2023-05-20")));
+        assert!(!matches_date("2023-05-25 12:00:00", Some("between"), Some("2023-05-10"), Some("2023-05-20")));
+    }
+
+    #[test]
+    fn test_matches_attachment_logic() {
+        let msg_none = Message {
+            id: "1".into(),
+            timestamp: "2023-01-01".into(),
+            contents: "hi".into(),
+            attachments: vec![],
+            stickers: vec![],
+            embeds: vec![],
+            call_info: None,
+            message_type: "DEFAULT".into(),
+            author: "user".into(),
+            author_id: None,
+            message_reference: None,
+        };
+        let msg_img = Message {
+            attachments: vec!["photo.png".into()],
+            ..msg_none.clone()
+        };
+        let msg_vid = Message {
+            attachments: vec!["video.mp4".into()],
+            ..msg_none.clone()
+        };
+        let msg_audio = Message {
+            attachments: vec!["voice-message.ogg".into()],
+            ..msg_none.clone()
+        };
+
+        assert!(matches_attachment(&msg_none, Some("none")));
+        assert!(!matches_attachment(&msg_img, Some("none")));
+        assert!(matches_attachment(&msg_img, Some("has")));
+        assert!(matches_attachment(&msg_img, Some("images")));
+        assert!(!matches_attachment(&msg_img, Some("videos")));
+        assert!(matches_attachment(&msg_vid, Some("videos")));
+        assert!(!matches_attachment(&msg_img, Some("audio")));
+        assert!(matches_attachment(&msg_audio, Some("audio")));
+    }
+
+    #[test]
+    fn test_extract_media_items() {
+        let msg = Message {
+            id: "m1".into(),
+            timestamp: "2023-01-01".into(),
+            contents: "test".into(),
+            attachments: vec![
+                "https://cdn.example.com/cat.png".into(),
+                "https://cdn.example.com/sound.mp3".into(),
+                "https://cdn.example.com/doc.pdf".into(),
+            ],
+            stickers: vec![],
+            embeds: vec![],
+            call_info: None,
+            message_type: "DEFAULT".into(),
+            author: "alice".into(),
+            author_id: None,
+            message_reference: None,
+        };
+
+        let items = extract_media_items(&[msg]);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].media_type, "image");
+        assert_eq!(items[0].filename, "cat.png");
+        assert_eq!(items[1].media_type, "audio");
+        assert_eq!(items[1].filename, "sound.mp3");
+        assert_eq!(items[2].media_type, "file");
+        assert_eq!(items[2].filename, "doc.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("valid.png"), "valid.png");
+        assert_eq!(sanitize_filename("bad/name:here?.jpg"), "bad_name_here_.jpg");
+    }
+
+    #[test]
+    fn test_calculate_dir_size_and_delete() {
+        let temp = std::env::temp_dir().join("test_discord_archiver_cache_test_dir");
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+        let sub = temp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(temp.join("a.txt"), b"12345").unwrap();
+        fs::write(sub.join("b.txt"), b"1234567890").unwrap();
+
+        assert_eq!(calculate_dir_size(&temp), 15);
+        delete_dir_contents_safe(&temp);
+        assert_eq!(calculate_dir_size(&temp), 0);
+        let _ = fs::remove_dir_all(&temp);
+    }
+}
+
+

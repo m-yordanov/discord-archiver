@@ -1,8 +1,8 @@
 import { Message } from './types';
-import { isImage, isVideo, isOtherFile } from './attachments';
+import { isImage, isVideo, isAudio, isOtherFile } from './attachments';
 
 export type DateMode = 'any' | 'before' | 'after' | 'between';
-export type AttachmentMode = 'any' | 'has' | 'none' | 'images' | 'videos' | 'files';
+export type AttachmentMode = 'any' | 'has' | 'none' | 'images' | 'videos' | 'audio' | 'files';
 
 export interface MessageFilters {
   dateMode: DateMode;
@@ -58,6 +58,8 @@ const matchesAttachment = (message: Message, mode: AttachmentMode) => {
       return attachments.some(isImage);
     case 'videos':
       return attachments.some(isVideo);
+    case 'audio':
+      return attachments.some(isAudio) || message.message_type === 'VOICE_MESSAGE';
     case 'files':
       return attachments.some(isOtherFile);
     default:

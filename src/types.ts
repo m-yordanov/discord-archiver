@@ -12,7 +12,6 @@ export interface ChannelInfo {
   guild_id: string | null;
   recipients: string[] | null;
   recipient_id: string | null;
-  folder_name: string;
   folder_names: string[];
   first_message_timestamp: string | null;
   last_message_timestamp: string | null;
@@ -40,6 +39,14 @@ export interface CallInfo {
   is_missed: boolean;
 }
 
+export interface MessageReference {
+  message_id: string;
+  channel_id?: string | null;
+  guild_id?: string | null;
+  author?: string | null;
+  contents?: string | null;
+}
+
 export interface Message {
   id: string;
   timestamp: string;
@@ -51,6 +58,7 @@ export interface Message {
   message_type: string;
   author: string;
   author_id: string | null;
+  message_reference?: MessageReference | null;
 }
 
 export interface DataIndex {
@@ -65,3 +73,31 @@ export interface MessagesResponse {
   messages: Message[];
   total: number;
 }
+
+export interface SearchMatch {
+  message: Message;
+  total_index: number;
+}
+
+export interface SearchResponse {
+  matches: SearchMatch[];
+  total_matches: number;
+}
+
+export interface ChannelMediaItem {
+  url: string;
+  message_id: string;
+  author: string;
+  timestamp: string;
+  filename: string;
+  media_type: 'image' | 'video' | 'audio' | 'file';
+}
+
+export interface DownloadResult {
+  success: boolean;
+  count: number;
+  file_path: string;
+  total_bytes: number;
+}
+
+

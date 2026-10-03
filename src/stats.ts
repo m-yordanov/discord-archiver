@@ -7,7 +7,7 @@ export interface ChannelStats {
   id: string;
   name: string;
   channel_type: string;
-  folder_name: string;
+  folder_names: string[];
   message_count: number;
   hours: HourBucket[];
 }

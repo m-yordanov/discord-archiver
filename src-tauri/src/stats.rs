@@ -15,7 +15,7 @@ pub struct ChannelStats {
     pub id: String,
     pub name: String,
     pub channel_type: String,
-    pub folder_name: String,
+    pub folder_names: Vec<String>,
     pub message_count: usize,
     pub hours: Vec<HourBucket>,
 }
@@ -108,7 +108,7 @@ pub fn compute_stats(path: &str) -> Result<PackageStats, String> {
             id: channel.id.clone(),
             name: channel.name.clone(),
             channel_type: channel.channel_type.clone(),
-            folder_name: channel.folder_name.clone(),
+            folder_names: channel.folder_names.clone(),
             message_count: channel.message_count,
             hours,
         });

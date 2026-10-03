@@ -11,49 +11,45 @@ pub fn id_to_string(value: &serde_json::Value) -> Option<String> {
 
 #[derive(Deserialize)]
 pub struct RawMessage {
-    #[serde(rename = "ID")]
+    #[serde(rename = "ID", alias = "id")]
     pub id: serde_json::Value,
-    #[serde(rename = "Timestamp")]
+    #[serde(rename = "Timestamp", alias = "timestamp")]
     pub timestamp: String,
-    #[serde(rename = "Contents", default)]
+    #[serde(rename = "Contents", alias = "contents", default)]
     pub contents: Option<String>,
-    #[serde(rename = "Attachments", default)]
+    #[serde(rename = "Attachments", alias = "attachments", default)]
     pub attachments: Option<String>,
-    #[serde(rename = "Stickers", default)]
+    #[serde(rename = "Stickers", alias = "stickers", default)]
     pub stickers: Option<serde_json::Value>,
-    #[serde(rename = "sticker_items", default)]
+    #[serde(rename = "sticker_items", alias = "StickerItems", default)]
     pub sticker_items: Option<serde_json::Value>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    #[serde(rename = "Embeds", alias = "embeds", alias = "embed", default)]
+    pub embeds: Option<serde_json::Value>,
+    #[serde(rename = "Call", alias = "call", default)]
+    pub call: Option<serde_json::Value>,
+    #[serde(rename = "Flags", alias = "flags", default)]
+    pub flags: Option<serde_json::Value>,
+    #[serde(rename = "Type", alias = "type", default)]
+    pub message_type: Option<serde_json::Value>,
+    #[serde(rename = "Author", alias = "author", default)]
+    pub author: Option<serde_json::Value>,
+    #[serde(rename = "author_id", alias = "AuthorID", alias = "user_id", default)]
+    pub author_id: Option<serde_json::Value>,
+    #[serde(
+        rename = "message_reference",
+        alias = "MessageReference",
+        alias = "reference",
+        alias = "Reference",
+        default
+    )]
+    pub message_reference: Option<serde_json::Value>,
+    #[serde(rename = "referenced_message", alias = "ReferencedMessage", default)]
+    pub referenced_message: Option<serde_json::Value>,
 }
 
 impl RawMessage {
     pub fn message_type_value(&self) -> Option<&serde_json::Value> {
-        self.extra.get("type").or_else(|| self.extra.get("Type"))
-    }
-
-    pub fn to_pretty_json(&self) -> String {
-        let mut map = serde_json::Map::new();
-        map.insert("ID".to_string(), self.id.clone());
-        map.insert(
-            "Timestamp".to_string(),
-            serde_json::Value::String(self.timestamp.clone()),
-        );
-
-        let named = [
-            ("Contents", self.contents.clone().map(serde_json::Value::String)),
-            ("Attachments", self.attachments.clone().map(serde_json::Value::String)),
-            ("Stickers", self.stickers.clone()),
-            ("sticker_items", self.sticker_items.clone()),
-        ];
-        for (key, value) in named {
-            if let Some(v) = value {
-                map.insert(key.to_string(), v);
-            }
-        }
-
-        map.extend(self.extra.iter().map(|(k, v)| (k.clone(), v.clone())));
-        serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or_default()
+        self.message_type.as_ref()
     }
 }
 
@@ -136,7 +132,6 @@ pub struct ChannelInfo {
     pub guild_id: Option<String>,
     pub recipients: Option<Vec<String>>,
     pub recipient_id: Option<String>,
-    pub folder_name: String,
     pub folder_names: Vec<String>,
     pub first_message_timestamp: Option<String>,
     pub last_message_timestamp: Option<String>,
@@ -167,6 +162,19 @@ pub struct CallInfo {
     pub is_missed: bool,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct MessageReference {
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guild_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contents: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 pub struct Message {
     pub id: String,
@@ -179,6 +187,8 @@ pub struct Message {
     pub message_type: String,
     pub author: String,
     pub author_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_reference: Option<MessageReference>,
 }
 
 #[derive(Serialize, Clone)]
@@ -195,3 +205,34 @@ pub struct MessagesResponse {
     pub messages: Vec<Message>,
     pub total: usize,
 }
+
+#[derive(Serialize, Clone)]
+pub struct SearchMatch {
+    pub message: Message,
+    pub total_index: usize,
+}
+
+#[derive(Serialize, Clone)]
+pub struct SearchResponse {
+    pub matches: Vec<SearchMatch>,
+    pub total_matches: usize,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ChannelMediaItem {
+    pub url: String,
+    pub message_id: String,
+    pub author: String,
+    pub timestamp: String,
+    pub filename: String,
+    pub media_type: String,
+}
+
+#[derive(Serialize, Clone)]
+pub struct DownloadResult {
+    pub success: bool,
+    pub count: usize,
+    pub file_path: String,
+    pub total_bytes: u64,
+}
+
