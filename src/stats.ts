@@ -42,6 +42,8 @@ export interface FoldedStats {
   totalMessages: number;
   activeDays: number;
   busiestDay: { date: Date; count: number } | null;
+  longestStreak: DayRun | null;
+  longestBreak: DayRun | null;
   peakHour: number | null;
   peakWeekday: number | null;
   habit: HabitSummary;
@@ -56,7 +58,51 @@ export const MAX_POINTS: Record<Granularity, number> = {
   year: 60,
 };
 
+export interface DayRun {
+  days: number;
+  start: Date;
+  end: Date;
+}
+
 const pad = (n: number) => String(n).padStart(2, '0');
+
+const addDays = (at: Date, days: number) =>
+  new Date(at.getFullYear(), at.getMonth(), at.getDate() + days);
+
+const daysBetween = (from: Date, to: Date) =>
+  Math.round((to.getTime() - from.getTime()) / 86_400_000);
+
+export const findDayRuns = (activeDays: Date[]) => {
+  const days = [...activeDays].sort((a, b) => a.getTime() - b.getTime());
+  let longestStreak: DayRun | null = null;
+  let longestBreak: DayRun | null = null;
+  let runStart = 0;
+
+  for (let i = 0; i < days.length; i++) {
+    if (i > 0) {
+      const gap = daysBetween(days[i - 1], days[i]) - 1;
+      if (gap > 0) {
+        runStart = i;
+        if (!longestBreak || gap > longestBreak.days) {
+          longestBreak = { days: gap, start: addDays(days[i - 1], 1), end: addDays(days[i], -1) };
+        }
+      }
+    }
+
+    const length = i - runStart + 1;
+    if (!longestStreak || length > longestStreak.days) {
+      longestStreak = { days: length, start: days[runStart], end: days[i] };
+    }
+  }
+
+  return { longestStreak, longestBreak };
+};
+
+export const formatDayRun = (run: DayRun) => {
+  const format = (at: Date) =>
+    at.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return run.days === 1 ? format(run.start) : `${format(run.start)} – ${format(run.end)}`;
+};
 
 export const mergeHours = (channels: ChannelStats[]): HourBucket[] => {
   const totals = new Map<number, number>();
@@ -185,6 +231,8 @@ export const foldHours = (hours: HourBucket[]): FoldedStats => {
     if (!busiestDay || day.count > busiestDay.count) busiestDay = day;
   }
 
+  const { longestStreak, longestBreak } = findDayRuns([...byDay.values()].map(day => day.date));
+
   const maxHourCount = Math.max(...byHour, 0);
   const peakHour = maxHourCount > 0 ? byHour.indexOf(maxHourCount) : null;
 
@@ -270,6 +318,8 @@ export const foldHours = (hours: HourBucket[]): FoldedStats => {
     totalMessages,
     activeDays: byDay.size,
     busiestDay,
+    longestStreak,
+    longestBreak,
     peakHour,
     peakWeekday,
     habit,

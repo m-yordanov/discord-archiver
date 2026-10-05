@@ -8,6 +8,7 @@ import {
   bucketBy,
   foldHours,
   formatCount,
+  formatDayRun,
   formatHourFull,
   formatPeriod,
   formatTick,
@@ -19,6 +20,8 @@ import {
 type Scope = 'dms' | 'channels' | 'both';
 
 const WEEKDAYS_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+const formatDays = (days: number) => `${days.toLocaleString()} ${days === 1 ? 'day' : 'days'}`;
 const WEEKDAYS_FULL = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 const GRANULARITIES: { value: Granularity; label: string }[] = [
@@ -224,7 +227,7 @@ export function StatsView({ stats, loading, error, onOpenChannel }: StatsViewPro
             <span className="text-sm text-dc-text-muted">messages you sent</span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
             <Tile value={stats.channels.length.toLocaleString()} label="conversations" />
             <Tile value={stats.server_count.toLocaleString()} label="servers" />
             <Tile value={folded.activeDays.toLocaleString()} label="active days" />
@@ -234,6 +237,25 @@ export function StatsView({ stats, loading, error, onOpenChannel }: StatsViewPro
                 folded.busiestDay
                   ? `busiest day, ${folded.busiestDay.date.toLocaleDateString()}`
                   : 'busiest day'
+              }
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-8">
+            <Tile
+              value={formatDays(folded.longestStreak?.days ?? 0)}
+              label={
+                folded.longestStreak
+                  ? `longest streak, ${formatDayRun(folded.longestStreak)}`
+                  : 'longest streak'
+              }
+            />
+            <Tile
+              value={formatDays(folded.longestBreak?.days ?? 0)}
+              label={
+                folded.longestBreak
+                  ? `longest break, ${formatDayRun(folded.longestBreak)}`
+                  : 'longest break'
               }
             />
           </div>
