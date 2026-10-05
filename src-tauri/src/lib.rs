@@ -1,6 +1,9 @@
 mod archive;
+mod media;
 mod models;
+mod content;
 mod parser;
+mod stats;
 mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -20,7 +23,8 @@ pub fn run() {
             commands::download_channel_media,
             commands::get_cache_info,
             commands::clear_cache,
-            commands::open_cache_folder
+            commands::open_cache_folder,
+            commands::get_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

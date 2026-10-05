@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { MessageCircle, Plus, Search } from 'lucide-react';
+import { BarChart3, MessageCircle, Plus, Search } from 'lucide-react';
 import { DataIndex, ChannelInfo } from '../types';
 import { ContextMenu, ContextMenuItem } from './ContextMenu';
 
@@ -14,6 +14,8 @@ interface SidebarProps {
   onOpenFolder: () => void;
   onOpenZip: () => void;
   onOpenSearch: () => void;
+  view: 'messages' | 'stats';
+  onSelectView: (view: 'messages' | 'stats') => void;
 }
 
 export function Sidebar({
@@ -25,6 +27,8 @@ export function Sidebar({
   onOpenFolder,
   onOpenZip,
   onOpenSearch,
+  view,
+  onSelectView,
 }: SidebarProps) {
   const [dmSortMode, setDmSortMode] = useState<DmSortMode>('most_messages');
   const [contextMenu, setContextMenu] = useState<{
@@ -33,7 +37,8 @@ export function Sidebar({
     items: ContextMenuItem[];
   } | null>(null);
 
-  const isDMs = selectedServer === 'dms';
+  const showingStats = view === 'stats';
+  const isDMs = !showingStats && selectedServer === 'dms';
   const rawChannels = isDMs
     ? dataIndex.direct_messages
     : dataIndex.servers.find(s => s.id === selectedServer)?.channels || [];
@@ -125,6 +130,17 @@ export function Sidebar({
         <div className="w-8 h-[2px] bg-dc-divider my-1 rounded-full shrink-0" />
 
         <button
+          title="Insights"
+          onClick={() => onSelectView('stats')}
+          className={`w-12 h-12 flex shrink-0 items-center justify-center text-white rounded-full transition-all duration-200 cursor-pointer ${
+            showingStats ? 'bg-dc-accent' : 'bg-dc-darkest hover:bg-dc-accent'
+          } relative group`}
+        >
+          <BarChart3 />
+          {showingStats && <div className="absolute -left-3 top-2 bottom-2 w-1 bg-white rounded-r-lg" />}
+        </button>
+
+        <button
           title="Direct Messages"
           onClick={() => onSelectServer('dms')}
           className={`w-12 h-12 flex shrink-0 items-center justify-center text-white rounded-full transition-all duration-200 cursor-pointer ${
@@ -138,7 +154,7 @@ export function Sidebar({
         <div className="w-8 h-[2px] bg-dc-divider my-2 rounded-full shrink-0" />
 
         {dataIndex.servers.map((server) => {
-          const isActive = selectedServer === server.id;
+          const isActive = !showingStats && selectedServer === server.id;
           return (
             <button
               key={server.id}
@@ -165,6 +181,7 @@ export function Sidebar({
         </button>
       </div>
 
+      {!showingStats && (
       <div className="w-[240px] bg-dc-darker flex flex-col">
         <div className="h-12 flex items-center justify-between px-3 font-bold text-white shadow-sm shrink-0 border-b border-dc-dark gap-2">
           <div className="flex items-center gap-2 truncate">
@@ -220,6 +237,7 @@ export function Sidebar({
           })}
         </div>
       </div>
+      )}
 
       {contextMenu && (
         <ContextMenu

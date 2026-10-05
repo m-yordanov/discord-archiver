@@ -7,6 +7,8 @@ import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
 import { ConversationSearchModal } from './components/ConversationSearchModal';
+import { StatsView } from './components/StatsView';
+import { ChannelStats, PackageStats } from './stats';
 import {
   RecentPackage,
   getRecentPackages,
@@ -16,6 +18,8 @@ import {
 } from './recentPackages';
 import { SettingsModal } from './components/SettingsModal';
 import { loadSettings } from './settings';
+
+type View = 'messages' | 'stats';
 
 export default function App() {
   const [dataIndex, setDataIndex] = useState<DataIndex | null>(null);
@@ -28,8 +32,14 @@ export default function App() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [recentPackages, setRecentPackages] = useState<RecentPackage[]>(getRecentPackages);
+  const [view, setView] = useState<View>('messages');
+  const [stats, setStats] = useState<PackageStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   const loadingPackageRef = useRef(false);
+  const dataPathRef = useRef(dataPath);
+  dataPathRef.current = dataPath;
 
   const loadData = useCallback(async (path: string) => {
     if (loadingPackageRef.current) return;
@@ -46,6 +56,9 @@ export default function App() {
       setDataIndex(index);
       setSelectedServer('dms');
       setSelectedChannel(null);
+      setView('messages');
+      setStats(null);
+      setStatsError(null);
       setRecentPackages(addRecentPackage(path, totalMessages));
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Could not read that data package.');
@@ -94,12 +107,36 @@ export default function App() {
     loadSettings();
   }, []);
 
+  useEffect(() => {
+    if (view !== 'stats' || stats || statsLoading || !dataPath) return;
+
+    const loadStats = async () => {
+      setStatsLoading(true);
+      setStatsError(null);
+      try {
+        const result: PackageStats = await invoke('get_stats');
+        if (dataPathRef.current === dataPath) setStats(result);
+      } catch (e) {
+        if (dataPathRef.current === dataPath) {
+          setStatsError(typeof e === 'string' ? e : 'Could not read statistics.');
+        }
+      } finally {
+        setStatsLoading(false);
+      }
+    };
+
+    loadStats();
+  }, [view, stats, statsLoading, dataPath]);
+
   const handleClosePackage = useCallback(() => {
     setDataIndex(null);
     setSelectedServer(null);
     setSelectedChannel(null);
     setDataPath(null);
     setIsSettingsOpen(false);
+    setView('messages');
+    setStats(null);
+    setStatsError(null);
   }, []);
 
   const handleOpenFolder = async () => {
@@ -173,6 +210,33 @@ export default function App() {
     return false;
   };
 
+  const handleOpenChannelFromStats = (channel: ChannelStats) => {
+    if (!dataIndex) return;
+
+    const dm = dataIndex.direct_messages.find(entry => entry.id === channel.id);
+    if (dm) {
+      setView('messages');
+      setSelectedServer('dms');
+      setSelectedChannel(dm);
+      return;
+    }
+
+    for (const server of dataIndex.servers) {
+      const found = server.channels.find(entry => entry.id === channel.id);
+      if (found) {
+        setView('messages');
+        setSelectedServer(server.id);
+        setSelectedChannel(found);
+        return;
+      }
+    }
+  };
+
+  const handleSelectServer = (serverId: string) => {
+    setView('messages');
+    setSelectedServer(serverId);
+  };
+
   const handleRemoveRecent = useCallback((pathToRemove: string) => {
     setRecentPackages(removeRecentPackage(pathToRemove));
   }, []);
@@ -211,20 +275,31 @@ export default function App() {
             dataIndex={dataIndex}
             selectedServer={selectedServer}
             selectedChannel={selectedChannel}
-            onSelectServer={setSelectedServer}
+            onSelectServer={handleSelectServer}
             onSelectChannel={setSelectedChannel}
             onOpenFolder={handleOpenFolder}
             onOpenZip={handleOpenZip}
             onOpenSearch={() => setIsSearchOpen(true)}
+            view={view}
+            onSelectView={setView}
           />
-          <ChatView
-            selectedChannel={selectedChannel}
-            dataPath={dataPath}
-            userMap={dataIndex.user_map}
-            onOpenDmByUserId={handleOpenDmByUserId}
-            onOpenChannelById={handleOpenChannelById}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-          />
+          {view === 'stats' ? (
+            <StatsView
+              stats={stats}
+              loading={statsLoading}
+              error={statsError}
+              onOpenChannel={handleOpenChannelFromStats}
+            />
+          ) : (
+            <ChatView
+              selectedChannel={selectedChannel}
+              dataPath={dataPath}
+              userMap={dataIndex.user_map}
+              onOpenDmByUserId={handleOpenDmByUserId}
+              onOpenChannelById={handleOpenChannelById}
+              onOpenSettings={() => setIsSettingsOpen(true)}
+            />
+          )}
         </div>
       )}
 
@@ -234,10 +309,12 @@ export default function App() {
           onClose={() => setIsSearchOpen(false)}
           dataIndex={dataIndex}
           onSelectDm={(channel) => {
+            setView('messages');
             setSelectedServer('dms');
             setSelectedChannel(channel);
           }}
           onSelectServerChannel={(serverId, channel) => {
+            setView('messages');
             setSelectedServer(serverId);
             setSelectedChannel(channel);
           }}

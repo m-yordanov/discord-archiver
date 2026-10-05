@@ -1,6 +1,9 @@
 use crate::archive;
+use crate::content::ContentTally;
 use crate::models::*;
+use crate::stats::{self, PackageStats};
 use serde::Deserialize;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 const GUILD_CHANNEL_TYPES: [&str; 4] = [
@@ -331,16 +334,49 @@ fn classify_message(
 struct RawMessageSummary<'a> {
     #[serde(borrow, rename = "Timestamp", alias = "timestamp")]
     timestamp: Option<&'a str>,
+    #[serde(borrow, rename = "Contents", alias = "contents", default)]
+    contents: Option<Cow<'a, str>>,
+    #[serde(borrow, rename = "Attachments", alias = "attachments", default)]
+    attachments: Option<Cow<'a, str>>,
+    #[serde(rename = "Call", alias = "call", default)]
+    call: Option<serde_json::Value>,
+    #[serde(rename = "Type", alias = "type", default)]
+    message_type: Option<serde_json::Value>,
 }
 
-fn summarise_messages(text: &str) -> (usize, Option<String>, Option<String>) {
+#[derive(Default)]
+struct ChannelSummary {
+    message_count: usize,
+    first: Option<String>,
+    last: Option<String>,
+    hours: HashMap<i64, u32>,
+}
+
+fn summarise_messages(text: &str, content: &mut ContentTally) -> ChannelSummary {
     let Ok(msgs) = serde_json::from_str::<Vec<RawMessageSummary>>(text) else {
-        return (0, None, None);
+        return ChannelSummary::default();
     };
 
-    let first = msgs.iter().filter_map(|m| m.timestamp).min().map(str::to_string);
-    let last = msgs.iter().filter_map(|m| m.timestamp).max().map(str::to_string);
-    (msgs.len(), first, last)
+    for msg in &msgs {
+        content.add_message(
+            msg.contents.as_deref(),
+            msg.attachments.as_deref(),
+            msg.call.as_ref(),
+            msg.message_type.as_ref(),
+        );
+    }
+
+    let mut hours = HashMap::new();
+    for seconds in msgs.iter().filter_map(|m| m.timestamp).filter_map(stats::epoch_seconds) {
+        *hours.entry(seconds.div_euclid(3600)).or_insert(0) += 1;
+    }
+
+    ChannelSummary {
+        message_count: msgs.len(),
+        first: msgs.iter().filter_map(|m| m.timestamp).min().map(str::to_string),
+        last: msgs.iter().filter_map(|m| m.timestamp).max().map(str::to_string),
+        hours,
+    }
 }
 
 fn push_guild_channel(
@@ -424,7 +460,9 @@ fn merge_duplicate_dms(dms: Vec<ChannelInfo>) -> Vec<ChannelInfo> {
     result
 }
 
-pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), String> {
+pub fn parse_package_source(
+    path: &str,
+) -> Result<(DataIndex, archive::Source, PackageStats), String> {
     let mut package = Package::open(path)?;
 
     let display_names = Package::parse_index(package.source.read_messages_index());
@@ -442,6 +480,8 @@ pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), 
 
     let mut servers_data: HashMap<String, Server> = HashMap::new();
     let mut direct_messages: Vec<ChannelInfo> = Vec::new();
+    let mut folder_hours: HashMap<String, HashMap<i64, u32>> = HashMap::new();
+    let mut content = ContentTally::default();
 
     for folder_name in package.source.channel_folders() {
         let Some(channel_str) = package.source.read_channel(&folder_name, "channel.json") else {
@@ -451,13 +491,18 @@ pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), 
             continue;
         };
 
-        let (message_count, first_message_timestamp, last_message_timestamp) = package
+        let channel_type = meta.channel_type_string();
+        if meta.guild.is_none() && GUILD_CHANNEL_TYPES.contains(&channel_type.as_str()) {
+            continue;
+        }
+
+        let summary = package
             .source
             .read_channel(&folder_name, "messages.json")
-            .map(|text| summarise_messages(&text))
-            .unwrap_or((0, None, None));
+            .map(|text| summarise_messages(&text, &mut content))
+            .unwrap_or_default();
+        folder_hours.insert(folder_name.clone(), summary.hours);
 
-        let channel_type = meta.channel_type_string();
         let recipient_ids = meta.extract_recipient_ids();
 
         let name = match channel_type.as_str() {
@@ -487,13 +532,13 @@ pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), 
             },
             name,
             channel_type: channel_type.clone(),
-            message_count,
+            message_count: summary.message_count,
             guild_id: meta.guild.as_ref().map(|g| g.id.clone()),
             recipients: Some(recipient_ids),
             recipient_id: None,
             folder_names: vec![folder_name],
-            first_message_timestamp,
-            last_message_timestamp,
+            first_message_timestamp: summary.first,
+            last_message_timestamp: summary.last,
         };
 
         match (channel_type.as_str(), meta.guild) {
@@ -501,7 +546,6 @@ pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), 
             (_, Some(guild)) => {
                 push_guild_channel(&mut servers_data, &server_names, guild, channel_info)
             }
-            (t, None) if GUILD_CHANNEL_TYPES.contains(&t) => {}
             (_, None) => direct_messages.push(channel_info),
         }
     }
@@ -584,21 +628,21 @@ pub fn parse_package_source(path: &str) -> Result<(DataIndex, archive::Source), 
         }
     }
 
-    Ok((
-        DataIndex {
-            servers,
-            direct_messages,
-            username,
-            user_id,
-            user_map,
-        },
-        package.source,
-    ))
+    let index = DataIndex {
+        servers,
+        direct_messages,
+        username,
+        user_id,
+        user_map,
+    };
+    let package_stats = stats::build_stats(&index, &folder_hours, content);
+
+    Ok((index, package.source, package_stats))
 }
 
 #[allow(dead_code)]
 pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
-    parse_package_source(path).map(|(idx, _)| idx)
+    parse_package_source(path).map(|(idx, _, _)| idx)
 }
 
 fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
@@ -955,6 +999,36 @@ mod tests {
         let res = load_messages(&fixture(), &riley.folder_names, 0, 0).expect("merged messages");
         let ids: Vec<&str> = res.messages.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["r1", "r2", "r3"]);
+    }
+
+    #[test]
+    fn stats_are_built_while_opening_the_package() {
+        let (idx, _, package_stats) = parse_package_source(&fixture()).expect("fixture should parse");
+
+        let listed: usize = idx
+            .direct_messages
+            .iter()
+            .chain(idx.servers.iter().flat_map(|s| &s.channels))
+            .map(|c| c.message_count)
+            .sum();
+        assert_eq!(package_stats.total_messages, listed);
+
+        for channel in &package_stats.channels {
+            let bucketed: u32 = channel.hours.iter().map(|b| b.count).sum();
+            assert_eq!(bucketed as usize, channel.message_count, "{}", channel.name);
+        }
+
+        let riley = package_stats
+            .channels
+            .iter()
+            .find(|c| c.name == "Riley")
+            .expect("Riley stats");
+        assert_eq!(riley.folder_names.len(), 2);
+        assert_eq!(riley.hours.len(), 2);
+
+        assert_eq!(package_stats.content.text_messages as usize, listed);
+        assert_eq!(package_stats.content.attachments.images, 1);
+        assert!(package_stats.content.top_words.iter().any(|w| w.term == "guild"));
     }
 
     #[test]
