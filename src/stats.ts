@@ -12,12 +12,39 @@ export interface ChannelStats {
   hours: HourBucket[];
 }
 
+export interface CountedTerm {
+  term: string;
+  count: number;
+}
+
+export interface ContentStats {
+  text_messages: number;
+  characters: number;
+  words: number;
+  top_words: CountedTerm[];
+  top_emoji: CountedTerm[];
+  attachments: { images: number; videos: number; audio: number; files: number };
+  links: number;
+  top_domains: CountedTerm[];
+  top_mentions: CountedTerm[];
+  calls: number;
+  call_seconds: number;
+}
+
 export interface PackageStats {
   total_messages: number;
   username: string;
   server_count: number;
   channels: ChannelStats[];
+  content: ContentStats;
 }
+
+export const formatDuration = (seconds: number) => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  if (hours === 0) return `${minutes}m`;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+};
 
 export type Granularity = 'hour' | 'day' | 'month' | 'year';
 

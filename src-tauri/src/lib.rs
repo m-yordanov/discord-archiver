@@ -1,5 +1,7 @@
 mod archive;
+mod media;
 mod models;
+mod content;
 mod parser;
 mod stats;
 mod commands;

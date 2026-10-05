@@ -7,8 +7,10 @@ import {
   axisTicks,
   bucketBy,
   foldHours,
+  CountedTerm,
   formatCount,
   formatDayRun,
+  formatDuration,
   formatHourFull,
   formatPeriod,
   formatTick,
@@ -54,6 +56,44 @@ interface SectionHeaderProps {
   title: string;
   hint?: string;
   children?: React.ReactNode;
+}
+
+function Card({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-dc-darker rounded-lg p-4 border border-dc-input/20">
+      <div className="text-xs font-semibold text-white mb-3">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function EmptyCard() {
+  return <div className="text-xs text-dc-text-muted py-2">Nothing to show yet.</div>;
+}
+
+function RankedBars({ items, prefix = '' }: { items: CountedTerm[]; prefix?: string }) {
+  const max = Math.max(...items.map(item => item.count), 0);
+  if (max === 0) return <EmptyCard />;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {items.map(item => (
+        <div key={item.term} className="flex items-center gap-2 text-xs">
+          <span className="w-28 shrink-0 truncate text-dc-text" title={`${prefix}${item.term}`}>
+            {prefix}
+            {item.term}
+          </span>
+          <div className="flex-1 bg-dc-darkest rounded-full h-2.5 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-dc-accent/80"
+              style={{ width: `${Math.max((item.count / max) * 100, item.count > 0 ? 2 : 0)}%` }}
+            />
+          </div>
+          <span className="w-12 shrink-0 text-right text-[11px] text-dc-text-muted">{formatCount(item.count)}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function SectionHeader({ title, hint, children }: SectionHeaderProps) {
@@ -202,6 +242,8 @@ export function StatsView({ stats, loading, error, onOpenChannel }: StatsViewPro
       </div>
     );
   }
+
+  const content = stats.content;
 
   const range =
     folded.first && folded.last
@@ -500,6 +542,89 @@ export function StatsView({ stats, loading, error, onOpenChannel }: StatsViewPro
                   <span>{folded.habit.weekendPercent}% Weekends</span>
                 </div>
               </div>
+            </div>
+          </div>
+
+          <div className="mb-8">
+            <SectionHeader title="What you write" hint="Across every message in the package" />
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+              <Tile
+                value={
+                  content.text_messages > 0
+                    ? Math.round(content.characters / content.text_messages).toLocaleString()
+                    : '0'
+                }
+                label="characters per message"
+              />
+              <Tile value={formatCount(content.words)} label="words written" />
+              <Tile value={content.links.toLocaleString()} label="links shared" />
+              <Tile
+                value={content.calls.toLocaleString()}
+                label={content.call_seconds > 0 ? `calls, ${formatDuration(content.call_seconds)} total` : 'calls'}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              <Card title="Top words">
+                {content.top_words.length === 0 ? (
+                  <EmptyCard />
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {content.top_words.map((word, rank) => (
+                      <span
+                        key={word.term}
+                        title={`${word.count.toLocaleString()} times`}
+                        className="px-2 py-1 rounded bg-dc-accent/20 border border-dc-accent/30 text-xs text-dc-text"
+                        style={{ opacity: 1 - rank * 0.015 }}
+                      >
+                        {word.term}
+                        <span className="ml-1.5 text-[10px] text-dc-text-muted">{formatCount(word.count)}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card title="Top emoji">
+                {content.top_emoji.length === 0 ? (
+                  <EmptyCard />
+                ) : (
+                  <div className="grid grid-cols-5 gap-2">
+                    {content.top_emoji.map(emoji => (
+                      <div
+                        key={emoji.term}
+                        title={`${emoji.term} — ${emoji.count.toLocaleString()} times`}
+                        className="flex flex-col items-center justify-center bg-dc-darkest rounded-md py-2 border border-dc-input/30 min-w-0"
+                      >
+                        <span className={`truncate max-w-full ${emoji.term.startsWith(':') ? 'text-[11px] text-dc-text' : 'text-2xl leading-none'}`}>
+                          {emoji.term}
+                        </span>
+                        <span className="text-[10px] text-dc-text-muted mt-1">{formatCount(emoji.count)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              <Card title="Attachments">
+                <RankedBars
+                  items={[
+                    { term: 'Images', count: content.attachments.images },
+                    { term: 'Videos', count: content.attachments.videos },
+                    { term: 'Audio & voice', count: content.attachments.audio },
+                    { term: 'Files', count: content.attachments.files },
+                  ]}
+                />
+              </Card>
+              <Card title="Most mentioned">
+                <RankedBars items={content.top_mentions} prefix="@" />
+              </Card>
+              <Card title="Top sites">
+                <RankedBars items={content.top_domains} />
+              </Card>
             </div>
           </div>
 

@@ -1,3 +1,4 @@
+use crate::content::{ContentStats, ContentTally};
 use crate::models::DataIndex;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ pub struct PackageStats {
     pub username: String,
     pub server_count: usize,
     pub channels: Vec<ChannelStats>,
+    pub content: ContentStats,
 }
 
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
@@ -81,6 +83,7 @@ fn merge_hours<'a>(maps: impl Iterator<Item = &'a HashMap<i64, u32>>) -> Vec<Hou
 pub fn build_stats(
     index: &DataIndex,
     folder_hours: &HashMap<String, HashMap<i64, u32>>,
+    content: ContentTally,
 ) -> PackageStats {
     let listed = index
         .direct_messages
@@ -112,6 +115,7 @@ pub fn build_stats(
         username: index.username.clone(),
         server_count: index.servers.len(),
         channels,
+        content: content.finish(&index.user_map),
     }
 }
 
