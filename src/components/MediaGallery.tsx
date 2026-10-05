@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -16,6 +17,9 @@ interface MediaGalleryProps {
 }
 
 type MediaFilterTab = 'all' | 'image' | 'video' | 'audio' | 'file';
+
+const GRID_GAP = 12;
+const MIN_TILE_WIDTH = 170;
 
 function GalleryImageItem({
   item,
@@ -140,6 +144,8 @@ export function MediaGallery({
   const [search, setSearch] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -200,6 +206,28 @@ export function MediaGallery({
     return result;
   }, [items, tab, search]);
 
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setGridWidth(entry.contentRect.width));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const columns = Math.max(2, Math.floor((gridWidth + GRID_GAP) / (MIN_TILE_WIDTH + GRID_GAP)));
+  const tileSize = gridWidth > 0 ? (gridWidth - GRID_GAP * (columns - 1)) / columns : MIN_TILE_WIDTH;
+
+  const virtualizer = useVirtualizer({
+    count: Math.ceil(filteredItems.length / columns),
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => tileSize + GRID_GAP,
+    overscan: 3,
+  });
+
+  useEffect(() => {
+    virtualizer.measure();
+  }, [tileSize, virtualizer]);
+
   const handleDownloadAll = async () => {
     if (items.length === 0 || isDownloading) return;
 
@@ -232,6 +260,153 @@ export function MediaGallery({
     e.preventDefault();
     e.stopPropagation();
     openUrl(url).catch(() => window.open(url, '_blank'));
+  };
+
+  const renderTile = (item: ChannelMediaItem, idx: number) => {
+    if (item.media_type === 'image') {
+      return (
+        <GalleryImageItem
+          key={`${item.message_id}-${idx}`}
+          item={item}
+          onImageClick={onImageClick}
+          onOpenLink={handleOpenLink}
+          onLinkContextMenu={onLinkContextMenu}
+          onJumpToMessage={onJumpToMessage}
+        />
+      );
+    }
+
+    if (item.media_type === 'video') {
+      const finalUrl = getResolvedUrl(item.url);
+      return (
+        <div
+          key={`${item.message_id}-${idx}`}
+          className="group relative aspect-square bg-dc-dark rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-2"
+        >
+          <div className="flex-1 flex items-center justify-center">
+            <div className="w-12 h-12 rounded-full bg-dc-accent/80 group-hover:bg-dc-accent text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-110">
+              <Film className="w-6 h-6" />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
+            <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
+              {item.filename}
+            </span>
+            <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
+              <span className="truncate">{item.author}</span>
+              <span>{item.timestamp.slice(0, 10)}</span>
+            </div>
+            <div className="flex items-center gap-1 mt-1">
+              <button
+                type="button"
+                onClick={e => handleOpenLink(e, finalUrl)}
+                className="flex-1 py-1 rounded bg-dc-dark hover:bg-dc-hover text-white text-[10px] font-medium transition-colors"
+              >
+                Play / Open
+              </button>
+              <button
+                type="button"
+                onClick={() => onJumpToMessage(item.message_id)}
+                className="flex-1 py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
+              >
+                Jump
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (item.media_type === 'audio') {
+      const finalUrl = getResolvedUrl(item.url);
+      return (
+        <div
+          key={`${item.message_id}-${idx}`}
+          className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-xl">🎙️</span>
+            <button
+              type="button"
+              onClick={e => handleOpenLink(e, finalUrl)}
+              onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
+              className="text-dc-text-muted hover:text-white text-xs"
+              title="Open file"
+            >
+              🔗
+            </button>
+          </div>
+
+          <div className="flex-1 flex items-center justify-center">
+            <div className="w-12 h-12 rounded-full bg-[#5865F2] text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-105">
+              <Music className="w-6 h-6" />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
+            <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
+              {item.filename}
+            </span>
+            <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
+              <span className="truncate">{item.author}</span>
+              <span>{item.timestamp.slice(0, 10)}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => onJumpToMessage(item.message_id)}
+              className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
+            >
+              Jump to Message
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    const finalUrl = getResolvedUrl(item.url);
+    return (
+      <div
+        key={`${item.message_id}-${idx}`}
+        className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-dc-accent/20 text-dc-accent border border-dc-accent/30 uppercase">
+            {item.filename.split('.').pop() || 'FILE'}
+          </span>
+          <button
+            type="button"
+            onClick={e => handleOpenLink(e, finalUrl)}
+            onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
+            className="text-dc-text-muted hover:text-white text-xs"
+            title="Open file"
+          >
+            🔗
+          </button>
+        </div>
+
+        <div className="flex-1 flex items-center justify-center">
+          <FileText className="w-10 h-10 text-dc-text-muted group-hover:text-white transition-colors" />
+        </div>
+
+        <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
+          <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
+            {item.filename}
+          </span>
+          <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
+            <span className="truncate">{item.author}</span>
+            <span>{item.timestamp.slice(0, 10)}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => onJumpToMessage(item.message_id)}
+            className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
+          >
+            Jump to Message
+          </button>
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -356,7 +531,7 @@ export function MediaGallery({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 min-h-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 min-h-0">
         {loading ? (
           <div className="flex items-center justify-center h-full text-dc-text-muted text-sm">
             Loading channel media...
@@ -372,150 +547,21 @@ export function MediaGallery({
             <span className="text-sm font-medium">No media found in this category.</span>
           </div>
         ) : (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-            {filteredItems.map((item, idx) => {
-              if (item.media_type === 'image') {
-                return (
-                  <GalleryImageItem
-                    key={`${item.message_id}-${idx}`}
-                    item={item}
-                    onImageClick={onImageClick}
-                    onOpenLink={handleOpenLink}
-                    onLinkContextMenu={onLinkContextMenu}
-                    onJumpToMessage={onJumpToMessage}
-                  />
-                );
-              }
-
-              if (item.media_type === 'video') {
-                const finalUrl = getResolvedUrl(item.url);
-                return (
-                  <div
-                    key={`${item.message_id}-${idx}`}
-                    className="group relative aspect-square bg-dc-dark rounded-xl overflow-hidden border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-2"
-                  >
-                    <div className="flex-1 flex items-center justify-center">
-                      <div className="w-12 h-12 rounded-full bg-dc-accent/80 group-hover:bg-dc-accent text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-110">
-                        <Film className="w-6 h-6" />
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
-                      <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
-                        {item.filename}
-                      </span>
-                      <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
-                        <span className="truncate">{item.author}</span>
-                        <span>{item.timestamp.slice(0, 10)}</span>
-                      </div>
-                      <div className="flex items-center gap-1 mt-1">
-                        <button
-                          type="button"
-                          onClick={e => handleOpenLink(e, finalUrl)}
-                          className="flex-1 py-1 rounded bg-dc-dark hover:bg-dc-hover text-white text-[10px] font-medium transition-colors"
-                        >
-                          Play / Open
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onJumpToMessage(item.message_id)}
-                          className="flex-1 py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
-                        >
-                          Jump
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-
-              if (item.media_type === 'audio') {
-                const finalUrl = getResolvedUrl(item.url);
-                return (
-                  <div
-                    key={`${item.message_id}-${idx}`}
-                    className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xl">🎙️</span>
-                      <button
-                        type="button"
-                        onClick={e => handleOpenLink(e, finalUrl)}
-                        onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
-                        className="text-dc-text-muted hover:text-white text-xs"
-                        title="Open file"
-                      >
-                        🔗
-                      </button>
-                    </div>
-
-                    <div className="flex-1 flex items-center justify-center">
-                      <div className="w-12 h-12 rounded-full bg-[#5865F2] text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-105">
-                        <Music className="w-6 h-6" />
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
-                      <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
-                        {item.filename}
-                      </span>
-                      <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
-                        <span className="truncate">{item.author}</span>
-                        <span>{item.timestamp.slice(0, 10)}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onJumpToMessage(item.message_id)}
-                        className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
-                      >
-                        Jump to Message
-                      </button>
-                    </div>
-                  </div>
-                );
-              }
-
-              const finalUrl = getResolvedUrl(item.url);
+          <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+            {virtualizer.getVirtualItems().map(row => {
+              const first = row.index * columns;
               return (
                 <div
-                  key={`${item.message_id}-${idx}`}
-                  className="group relative aspect-square bg-dc-dark rounded-xl border border-dc-input/40 hover:border-dc-accent/80 transition-all shadow-sm flex flex-col justify-between p-3"
+                  key={row.key}
+                  className="absolute left-0 top-0 w-full grid gap-3"
+                  style={{
+                    transform: `translateY(${row.start}px)`,
+                    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                  }}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-dc-accent/20 text-dc-accent border border-dc-accent/30 uppercase">
-                      {item.filename.split('.').pop() || 'FILE'}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={e => handleOpenLink(e, finalUrl)}
-                      onContextMenu={e => onLinkContextMenu?.(e, finalUrl)}
-                      className="text-dc-text-muted hover:text-white text-xs"
-                      title="Open file"
-                    >
-                      🔗
-                    </button>
-                  </div>
-
-                  <div className="flex-1 flex items-center justify-center">
-                    <FileText className="w-10 h-10 text-dc-text-muted group-hover:text-white transition-colors" />
-                  </div>
-
-                  <div className="flex flex-col gap-1 min-w-0 bg-dc-darker/90 p-2 rounded-lg">
-                    <span className="text-[11px] font-semibold text-white truncate" title={item.filename}>
-                      {item.filename}
-                    </span>
-                    <div className="flex items-center justify-between text-[10px] text-dc-text-muted">
-                      <span className="truncate">{item.author}</span>
-                      <span>{item.timestamp.slice(0, 10)}</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => onJumpToMessage(item.message_id)}
-                      className="mt-1 w-full py-1 rounded bg-dc-accent/90 hover:bg-dc-accent text-white text-[10px] font-semibold transition-colors"
-                    >
-                      Jump to Message
-                    </button>
-                  </div>
+                  {filteredItems
+                    .slice(first, first + columns)
+                    .map((item, offset) => renderTile(item, first + offset))}
                 </div>
               );
             })}
