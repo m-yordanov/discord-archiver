@@ -100,4 +100,26 @@ export interface DownloadResult {
   total_bytes: number;
 }
 
+export interface GlobalSearchMatch {
+  channel_id: string;
+  channel_name: string;
+  channel_type: string;
+  server_name: string | null;
+  message_id: string;
+  timestamp: string;
+  contents: string;
+  total_index: number;
+}
 
+export interface GlobalSearchResponse {
+  matches: GlobalSearchMatch[];
+  total_matches: number;
+  conversations: number;
+}
+
+export interface MessageJump {
+  channelId: string;
+  messageId: string;
+  totalIndex: number;
+  nonce: number;
+}

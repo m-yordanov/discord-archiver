@@ -3,6 +3,7 @@ mod media;
 mod models;
 mod content;
 mod parser;
+mod search;
 mod stats;
 mod commands;
 
@@ -19,6 +20,7 @@ pub fn run() {
             commands::get_messages,
             commands::get_raw_message,
             commands::search_channel_messages,
+            commands::search_all_messages,
             commands::get_channel_media,
             commands::download_channel_media,
             commands::get_cache_info,

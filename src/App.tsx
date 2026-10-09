@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open } from '@tauri-apps/plugin-dialog';
-import { DataIndex, ChannelInfo } from './types';
+import { DataIndex, ChannelInfo, GlobalSearchMatch, MessageJump } from './types';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { Sidebar } from './components/Sidebar';
 import { ChatView } from './components/ChatView';
@@ -37,6 +37,9 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsError, setStatsError] = useState<string | null>(null);
 
+  const [jumpTarget, setJumpTarget] = useState<MessageJump | null>(null);
+  const jumpNonceRef = useRef(0);
+
   const loadingPackageRef = useRef(false);
   const dataPathRef = useRef(dataPath);
   dataPathRef.current = dataPath;
@@ -59,6 +62,7 @@ export default function App() {
       setView('messages');
       setStats(null);
       setStatsError(null);
+      setJumpTarget(null);
       setRecentPackages(addRecentPackage(path, totalMessages));
     } catch (e) {
       setError(typeof e === 'string' ? e : 'Could not read that data package.');
@@ -137,6 +141,7 @@ export default function App() {
     setView('messages');
     setStats(null);
     setStatsError(null);
+    setJumpTarget(null);
   }, []);
 
   const handleOpenFolder = async () => {
@@ -232,6 +237,28 @@ export default function App() {
     }
   };
 
+  const handleOpenSearchMatch = (match: GlobalSearchMatch) => {
+    if (!dataIndex) return;
+
+    const dm = dataIndex.direct_messages.find(entry => entry.id === match.channel_id);
+    const server = dm
+      ? null
+      : dataIndex.servers.find(entry => entry.channels.some(c => c.id === match.channel_id));
+    const channel = dm ?? server?.channels.find(c => c.id === match.channel_id);
+    if (!channel) return;
+
+    jumpNonceRef.current += 1;
+    setView('messages');
+    setSelectedServer(server ? server.id : 'dms');
+    setSelectedChannel(channel);
+    setJumpTarget({
+      channelId: channel.id,
+      messageId: match.message_id,
+      totalIndex: match.total_index,
+      nonce: jumpNonceRef.current,
+    });
+  };
+
   const handleSelectServer = (serverId: string) => {
     setView('messages');
     setSelectedServer(serverId);
@@ -298,6 +325,7 @@ export default function App() {
               onOpenDmByUserId={handleOpenDmByUserId}
               onOpenChannelById={handleOpenChannelById}
               onOpenSettings={() => setIsSettingsOpen(true)}
+              jumpTarget={jumpTarget}
             />
           )}
         </div>
@@ -313,6 +341,7 @@ export default function App() {
             setSelectedServer('dms');
             setSelectedChannel(channel);
           }}
+          onSelectMessage={handleOpenSearchMatch}
           onSelectServerChannel={(serverId, channel) => {
             setView('messages');
             setSelectedServer(serverId);

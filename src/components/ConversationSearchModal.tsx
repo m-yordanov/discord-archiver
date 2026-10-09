@@ -1,6 +1,33 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Search, MessageCircle, Hash, X, ArrowRight, CornerDownLeft } from 'lucide-react';
-import { DataIndex, ChannelInfo } from '../types';
+import { invoke } from '@tauri-apps/api/core';
+import { Search, MessageCircle, MessageSquare, Hash, X, ArrowRight, CornerDownLeft } from 'lucide-react';
+import { DataIndex, ChannelInfo, GlobalSearchMatch, GlobalSearchResponse } from '../types';
+
+type SearchMode = 'conversations' | 'messages';
+
+const MESSAGE_RESULT_LIMIT = 200;
+
+const snippetAround = (text: string, query: string) => {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const at = flat.toLowerCase().indexOf(query.toLowerCase());
+  if (at < 0) {
+    return { before: flat.slice(0, 160), match: '', after: flat.length > 160 ? '…' : '' };
+  }
+  const start = Math.max(0, at - 50);
+  const end = at + query.length;
+  return {
+    before: (start > 0 ? '…' : '') + flat.slice(start, at),
+    match: flat.slice(at, end),
+    after: flat.slice(end, end + 120) + (flat.length > end + 120 ? '…' : ''),
+  };
+};
+
+const formatResultDate = (timestamp: string) =>
+  new Date(timestamp.replace(' ', 'T')).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
 
 interface SearchResult {
   id: string;
@@ -19,6 +46,7 @@ interface ConversationSearchModalProps {
   dataIndex: DataIndex;
   onSelectDm: (channel: ChannelInfo) => void;
   onSelectServerChannel: (serverId: string, channel: ChannelInfo) => void;
+  onSelectMessage: (match: GlobalSearchMatch) => void;
 }
 
 export function ConversationSearchModal({
@@ -27,10 +55,15 @@ export function ConversationSearchModal({
   dataIndex,
   onSelectDm,
   onSelectServerChannel,
+  onSelectMessage,
 }: ConversationSearchModalProps) {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [filterType, setFilterType] = useState<'all' | 'dms' | 'channels'>('all');
+  const [mode, setMode] = useState<SearchMode>('conversations');
+  const [messageResults, setMessageResults] = useState<GlobalSearchResponse | null>(null);
+  const [isSearchingMessages, setIsSearchingMessages] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsContainerRef = useRef<HTMLDivElement>(null);
@@ -116,9 +149,49 @@ export function ConversationSearchModal({
       .slice(0, 40);
   }, [allItems, query, filterType]);
 
+  const trimmedQuery = query.trim();
+
+  useEffect(() => {
+    if (!isOpen || mode !== 'messages' || trimmedQuery.length < 2) {
+      setMessageResults(null);
+      setIsSearchingMessages(false);
+      setMessageError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setIsSearchingMessages(true);
+    const timer = setTimeout(async () => {
+      try {
+        const response = await invoke<GlobalSearchResponse>('search_all_messages', {
+          query: trimmedQuery,
+          scope: filterType,
+          limit: MESSAGE_RESULT_LIMIT,
+        });
+        if (cancelled) return;
+        setMessageResults(response);
+        setMessageError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setMessageResults(null);
+        setMessageError(typeof e === 'string' ? e : 'Could not search messages.');
+      } finally {
+        if (!cancelled) setIsSearchingMessages(false);
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [isOpen, mode, trimmedQuery, filterType]);
+
+  const messageMatches = messageResults?.matches ?? [];
+  const resultCount = mode === 'messages' ? messageMatches.length : filteredResults.length;
+
   useEffect(() => {
     setSelectedIndex(0);
-  }, [filteredResults]);
+  }, [filteredResults, messageResults, mode]);
 
   useEffect(() => {
     if (resultsContainerRef.current) {
@@ -136,18 +209,26 @@ export function ConversationSearchModal({
     onClose();
   };
 
+  const handleSelectMessage = (match: GlobalSearchMatch) => {
+    onSelectMessage(match);
+    onClose();
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex(prev => (filteredResults.length > 0 ? (prev + 1) % filteredResults.length : 0));
+      setSelectedIndex(prev => (resultCount > 0 ? (prev + 1) % resultCount : 0));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex(prev =>
-        filteredResults.length > 0 ? (prev - 1 + filteredResults.length) % filteredResults.length : 0
-      );
+      setSelectedIndex(prev => (resultCount > 0 ? (prev - 1 + resultCount) % resultCount : 0));
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      setMode(prev => (prev === 'messages' ? 'conversations' : 'messages'));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filteredResults[selectedIndex]) {
+      if (mode === 'messages') {
+        if (messageMatches[selectedIndex]) handleSelectMessage(messageMatches[selectedIndex]);
+      } else if (filteredResults[selectedIndex]) {
         handleSelect(filteredResults[selectedIndex]);
       }
     } else if (e.key === 'Escape') {
@@ -175,7 +256,11 @@ export function ConversationSearchModal({
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search conversations, servers, and DMs..."
+            placeholder={
+              mode === 'messages'
+                ? 'Search messages in every conversation...'
+                : 'Search conversations, servers, and DMs...'
+            }
             className="flex-1 bg-transparent border-none outline-none text-white text-sm placeholder:text-dc-text-muted"
           />
           {query && (
@@ -187,6 +272,26 @@ export function ConversationSearchModal({
               <X size={14} />
             </button>
           )}
+        </div>
+
+        <div className="px-3 pt-1.5 flex items-center gap-4 text-xs bg-dc-dark border-b border-dc-dark">
+          {(['conversations', 'messages'] as const).map(option => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => {
+                setMode(option);
+                inputRef.current?.focus();
+              }}
+              className={`pb-1.5 border-b-2 cursor-pointer transition-colors font-medium ${
+                mode === option
+                  ? 'border-dc-accent text-white'
+                  : 'border-transparent text-dc-text-muted hover:text-white'
+              }`}
+            >
+              {option === 'messages' ? 'Messages' : 'Conversations'}
+            </button>
+          ))}
         </div>
 
         <div className="px-3 py-1.5 border-b border-dc-dark flex items-center justify-between text-xs bg-dc-dark/40">
@@ -228,7 +333,15 @@ export function ConversationSearchModal({
             </button>
           </div>
           <span className="text-[11px] text-dc-text-muted">
-            {filteredResults.length} {filteredResults.length === 1 ? 'result' : 'results'}
+            {mode === 'messages'
+              ? messageResults
+                ? `${messageResults.total_matches.toLocaleString()} ${
+                    messageResults.total_matches === 1 ? 'message' : 'messages'
+                  } in ${messageResults.conversations.toLocaleString()} ${
+                    messageResults.conversations === 1 ? 'conversation' : 'conversations'
+                  }`
+                : ''
+              : `${filteredResults.length} ${filteredResults.length === 1 ? 'result' : 'results'}`}
           </span>
         </div>
 
@@ -236,10 +349,93 @@ export function ConversationSearchModal({
           ref={resultsContainerRef}
           className="flex-1 overflow-y-auto p-2 flex flex-col gap-1 min-h-[160px]"
         >
-          {filteredResults.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-dc-text-muted py-8 text-xs">
-              <Search size={28} className="opacity-30 mb-2" />
+          {mode === 'messages' ? (
+            trimmedQuery.length < 2 ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-dc-text-muted py-8 text-xs">
+                <MessageSquare size={28} className="opacity-30 mb-2" />
+                <span>Type at least 2 characters to search every message</span>
+              </div>
+            ) : messageError ? (
+              <div className="flex-1 flex items-center justify-center text-dc-text-muted py-8 text-xs">
+                {messageError}
+              </div>
+            ) : !messageResults ? (
+              <div className="flex-1 flex items-center justify-center text-dc-text-muted py-8 text-xs">
+                Searching every conversation…
+              </div>
+            ) : messageMatches.length === 0 ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-dc-text-muted py-8 text-xs">
+                <Search size={28} className="opacity-30 mb-2" />
+                <span>No messages contain &quot;{trimmedQuery}&quot;</span>
+              </div>
+            ) : (
+              <>
+                {messageMatches.map((match, index) => {
+                  const isSelected = index === selectedIndex;
+                  const isDm = match.channel_type === 'DM' || match.channel_type === 'GROUP_DM';
+                  const snippet = snippetAround(match.contents, trimmedQuery);
+                  return (
+                    <button
+                      key={`${match.channel_id}-${match.message_id}-${index}`}
+                      type="button"
+                      onClick={() => handleSelectMessage(match)}
+                      onMouseEnter={() => setSelectedIndex(index)}
+                      className={`w-full flex flex-col gap-1 px-3 py-2 rounded-lg text-left transition-colors cursor-pointer border ${
+                        isSelected
+                          ? 'bg-dc-accent text-white border-dc-accent'
+                          : 'bg-dc-dark/40 border-transparent hover:bg-dc-hover text-dc-text'
+                      } ${isSearchingMessages ? 'opacity-60' : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="flex items-center gap-1.5 min-w-0 font-semibold">
+                          {isDm ? <MessageCircle size={12} className="shrink-0" /> : <Hash size={12} className="shrink-0" />}
+                          <span className="truncate">{match.channel_name}</span>
+                          {match.server_name && (
+                            <span className={`truncate font-normal ${isSelected ? 'text-white/80' : 'text-dc-text-muted'}`}>
+                              in {match.server_name}
+                            </span>
+                          )}
+                        </span>
+                        <span className={`shrink-0 ${isSelected ? 'text-white/80' : 'text-dc-text-muted'}`}>
+                          {formatResultDate(match.timestamp)}
+                        </span>
+                      </div>
+                      <span className="text-xs leading-snug line-clamp-2 break-words">
+                        {snippet.before}
+                        {snippet.match && (
+                          <mark
+                            className={`rounded px-0.5 ${
+                              isSelected ? 'bg-white/30 text-white' : 'bg-dc-accent/40 text-white'
+                            }`}
+                          >
+                            {snippet.match}
+                          </mark>
+                        )}
+                        {snippet.after}
+                      </span>
+                    </button>
+                  );
+                })}
+                {messageResults.total_matches > messageMatches.length && (
+                  <div className="text-[11px] text-dc-text-muted text-center py-2">
+                    Showing the newest {messageMatches.length.toLocaleString()}. Add more words to narrow it down.
+                  </div>
+                )}
+              </>
+            )
+          ) : filteredResults.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 text-dc-text-muted py-8 text-xs">
+              <Search size={28} className="opacity-30" />
               <span>No conversations found matching &quot;{query}&quot;</span>
+              {trimmedQuery.length >= 2 && (
+                <button
+                  type="button"
+                  onClick={() => setMode('messages')}
+                  className="px-3 py-1.5 rounded bg-dc-accent hover:bg-dc-accent/90 text-white font-medium cursor-pointer"
+                >
+                  Search messages for &quot;{trimmedQuery}&quot;
+                </button>
+              )}
             </div>
           ) : (
             filteredResults.map((item, index) => {
@@ -322,6 +518,10 @@ export function ConversationSearchModal({
                 <span>Enter</span>
               </kbd>
               <span>to select</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <kbd className="px-1.5 py-0.5 bg-dc-darker rounded border border-dc-input text-[10px]">Tab</kbd>
+              <span>{mode === 'messages' ? 'conversations' : 'messages'}</span>
             </span>
           </div>
           <span className="flex items-center gap-1">

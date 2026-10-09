@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { ChannelInfo, Message, MessagesResponse, SearchMatch, SearchResponse } from '../types';
+import { ChannelInfo, Message, MessageJump, MessagesResponse, SearchMatch, SearchResponse } from '../types';
 import { MessageItem } from './MessageItem';
 import { ImageModal } from './ImageModal';
 import { JsonModal } from './JsonModal';
@@ -33,6 +33,7 @@ interface ChatViewProps {
   onOpenDmByUserId?: (userId: string) => boolean;
   onOpenChannelById?: (channelId: string) => boolean;
   onOpenSettings?: () => void;
+  jumpTarget?: MessageJump | null;
 }
 
 export function ChatView({
@@ -42,6 +43,7 @@ export function ChatView({
   onOpenDmByUserId,
   onOpenChannelById,
   onOpenSettings,
+  jumpTarget = null,
 }: ChatViewProps) {
   const { timeFormat } = useSettings();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -75,6 +77,10 @@ export function ChatView({
   const highlightTimerRef = useRef<number | null>(null);
   const activeChannelRef = useRef(selectedChannel);
   activeChannelRef.current = selectedChannel;
+  const jumpTargetRef = useRef(jumpTarget);
+  jumpTargetRef.current = jumpTarget;
+  const handledJumpRef = useRef<number | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -104,7 +110,15 @@ export function ChatView({
       return;
     }
 
-    shouldScrollToBottomRef.current = true;
+    const pending = jumpTargetRef.current;
+    const jump =
+      pending && pending.channelId === selectedChannel.id && handledJumpRef.current !== pending.nonce
+        ? pending
+        : null;
+    if (jump) handledJumpRef.current = jump.nonce;
+    const jumpOffset = jump ? Math.max(0, jump.totalIndex - Math.floor(PAGE_SIZE / 2)) : null;
+
+    shouldScrollToBottomRef.current = !jump;
     let cancelled = false;
 
     const loadInitialMessages = async () => {
@@ -115,13 +129,16 @@ export function ChatView({
           dataPath,
           folderNames: selectedChannel.folder_names,
           limit: PAGE_SIZE,
-          offset: null,
+          offset: jumpOffset,
         });
         if (cancelled) return;
 
         setMessages(response.messages);
         setTotalMessages(response.total);
-        setLoadedOffset(Math.max(0, response.total - response.messages.length));
+        setLoadedOffset(
+          jumpOffset ?? Math.max(0, response.total - response.messages.length)
+        );
+        if (jump) setScrollTarget(jump.messageId);
       } catch (e) {
         if (cancelled) return;
         setMessages([]);
@@ -144,6 +161,43 @@ export function ChatView({
       cancelled = true;
     };
   }, [selectedChannel, dataPath]);
+
+  useEffect(() => {
+    const target = jumpTarget;
+    if (!target || !selectedChannel || !dataPath) return;
+    if (target.channelId !== selectedChannel.id || handledJumpRef.current === target.nonce) return;
+    handledJumpRef.current = target.nonce;
+
+    setViewMode('chat');
+    setFilters(EMPTY_FILTERS);
+    if (messages.some(m => m.id === target.messageId)) {
+      setScrollTarget(target.messageId);
+      return;
+    }
+
+    const channel = selectedChannel;
+    const offset = Math.max(0, target.totalIndex - Math.floor(PAGE_SIZE / 2));
+    setLoading(true);
+    invoke<MessagesResponse>('get_messages', {
+      dataPath,
+      folderNames: channel.folder_names,
+      limit: PAGE_SIZE,
+      offset,
+    })
+      .then(response => {
+        if (activeChannelRef.current !== channel) return;
+        setMessages(response.messages);
+        setTotalMessages(response.total);
+        setLoadedOffset(offset);
+        setScrollTarget(target.messageId);
+      })
+      .catch(() => {
+        if (activeChannelRef.current === channel) showToast('Could not load messages around this result');
+      })
+      .finally(() => {
+        if (activeChannelRef.current === channel) setLoading(false);
+      });
+  }, [jumpTarget]);
 
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlder || loading || !hasMoreOlder || !selectedChannel || !dataPath) return;
@@ -263,6 +317,20 @@ export function ChatView({
     overscan: 10,
     getItemKey: index => filteredMessages[index]?.id ?? String(index),
   });
+
+  useEffect(() => {
+    if (!scrollTarget || loading) return;
+    const index = filteredMessages.findIndex(m => m.id === scrollTarget);
+    if (index === -1) return;
+
+    setScrollTarget(null);
+    virtualizer.scrollToIndex(index, { align: 'center' });
+    const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: 'center' }));
+    setHighlightedMessageId(scrollTarget);
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2500);
+    return () => cancelAnimationFrame(frame);
+  }, [scrollTarget, loading, filteredMessages, virtualizer]);
 
   useEffect(() => {
     if (searchQuery || filteredMessages.length === 0) return;

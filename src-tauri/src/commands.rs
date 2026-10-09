@@ -8,6 +8,7 @@ use crate::models::{
 };
 use crate::media::{is_audio, is_image, is_other_file, is_video};
 use crate::parser;
+use crate::search::{self, GlobalSearchResponse, SearchChannel, SearchCorpus};
 use crate::stats::PackageStats;
 use tauri::{AppHandle, Manager};
 
@@ -20,6 +21,8 @@ pub struct AppState {
     pub source: Mutex<Option<Source>>,
     pub channel_cache: Mutex<Option<CachedChannel>>,
     pub stats: Mutex<Option<PackageStats>>,
+    pub search_channels: Mutex<Vec<SearchChannel>>,
+    pub search_corpus: Mutex<Option<SearchCorpus>>,
 }
 
 impl AppState {
@@ -28,6 +31,8 @@ impl AppState {
             source: Mutex::new(None),
             channel_cache: Mutex::new(None),
             stats: Mutex::new(None),
+            search_channels: Mutex::new(Vec::new()),
+            search_corpus: Mutex::new(None),
         }
     }
 }
@@ -83,6 +88,8 @@ pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex
         *state.source.lock().map_err(|e| e.to_string())? = Some(source);
         *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
         *state.stats.lock().map_err(|e| e.to_string())? = Some(package_stats);
+        *state.search_channels.lock().map_err(|e| e.to_string())? = search::channels_of(&index);
+        *state.search_corpus.lock().map_err(|e| e.to_string())? = None;
         Ok(index)
     })
     .await
@@ -108,6 +115,32 @@ pub async fn get_messages(
                 page_size.unwrap_or(0),
             )
         })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn search_all_messages(
+    query: String,
+    scope: Option<String>,
+    limit: Option<usize>,
+    app: AppHandle,
+) -> Result<GlobalSearchResponse, String> {
+    run_blocking(app, move |state| {
+        let mut corpus = state.search_corpus.lock().map_err(|e| e.to_string())?;
+        if corpus.is_none() {
+            let channels = state.search_channels.lock().map_err(|e| e.to_string())?.clone();
+            let mut source = state.source.lock().map_err(|e| e.to_string())?;
+            let source = source
+                .as_mut()
+                .ok_or_else(|| "No data package loaded.".to_string())?;
+            *corpus = Some(SearchCorpus::build(source, channels));
+        }
+        Ok(corpus.as_ref().unwrap().search(
+            &query,
+            scope.as_deref().unwrap_or("all"),
+            limit.unwrap_or(200),
+        ))
     })
     .await
 }

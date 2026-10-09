@@ -1032,6 +1032,45 @@ mod tests {
     }
 
     #[test]
+    fn global_search_spans_conversations_and_points_at_chat_positions() {
+        let (idx, mut source, _) = parse_package_source(&fixture()).expect("fixture should parse");
+        let corpus =
+            crate::search::SearchCorpus::build(&mut source, crate::search::channels_of(&idx));
+
+        let guild = corpus.search("GUILD", "all", 0);
+        assert_eq!(guild.total_matches, 2);
+        assert_eq!(guild.conversations, 2);
+        assert_eq!(corpus.search("guild", "dms", 0).total_matches, 0);
+        assert_eq!(corpus.search("guild", "channels", 0).total_matches, 2);
+
+        let alice = corpus.search("f", "dms", 2);
+        assert_eq!(alice.total_matches, 4);
+        let ids: Vec<&str> = alice.matches.iter().map(|m| m.message_id.as_str()).collect();
+        assert_eq!(ids, vec!["m5", "m4"]);
+
+        let chat = load_messages(&fixture(), &alice_folders(&idx), 0, 0).unwrap();
+        for hit in &alice.matches {
+            assert_eq!(chat.messages[hit.total_index].id, hit.message_id);
+        }
+
+        let riley = corpus.search("account", "all", 0);
+        assert_eq!(riley.matches.len(), 1);
+        assert_eq!(riley.matches[0].channel_name, "Riley");
+        let riley_folders = &idx
+            .direct_messages
+            .iter()
+            .find(|d| d.name == "Riley")
+            .unwrap()
+            .folder_names;
+        let chat = load_messages(&fixture(), riley_folders, 0, 0).unwrap();
+        assert_eq!(chat.messages[riley.matches[0].total_index].id, "r3");
+    }
+
+    fn alice_folders(idx: &DataIndex) -> Vec<String> {
+        alice(idx).folder_names.clone()
+    }
+
+    #[test]
     fn accepts_the_messages_folder_directly() {
         let messages_dir = format!("{}/messages", fixture());
         let idx = parse_data_package(&messages_dir).expect("messages dir should parse");
