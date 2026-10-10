@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { ChannelInfo, Message, MessageJump, MessagesResponse, SearchMatch, SearchResponse } from '../types';
+import { ChannelInfo, Message, MessageJump, MessagesResponse, SearchResponse } from '../types';
 import { MessageItem } from './MessageItem';
 import { ImageModal } from './ImageModal';
 import { JsonModal } from './JsonModal';
@@ -25,6 +25,29 @@ const shouldShowHeader = (currentMsg: Message, prevMsg: Message | null) => {
   const prevT = new Date(prevMsg.timestamp.replace(' ', 'T')).getTime();
   return currentT - prevT > 7 * 60 * 1000;
 };
+
+const SEARCH_NAV_BUTTON =
+  'px-1 py-0.5 hover:bg-dc-hover rounded text-dc-text-muted hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-default';
+
+const toggleButtonClass = (active: boolean) =>
+  `px-2 py-1 rounded text-xs transition-colors cursor-pointer border ${
+    active
+      ? 'bg-dc-accent text-white border-dc-accent'
+      : 'bg-dc-dark text-dc-text-muted hover:text-white border-dc-input/60'
+  }`;
+
+function LoadMoreButton({ onClick, busy, label }: { onClick: () => void; busy: boolean; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="px-3 py-1.5 rounded text-xs bg-dc-dark hover:bg-dc-hover text-dc-text border border-dc-input/60 transition-colors cursor-pointer disabled:opacity-50"
+    >
+      {label}
+    </button>
+  );
+}
 
 interface ChatViewProps {
   selectedChannel: ChannelInfo | null;
@@ -57,13 +80,13 @@ export function ChatView({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filters, setFilters] = useState<MessageFilters>(EMPTY_FILTERS);
-  const [searchResults, setSearchResults] = useState<SearchMatch[]>([]);
-  const [totalSearchMatches, setTotalSearchMatches] = useState<number>(0);
+  const [searchResponse, setSearchResponse] = useState<SearchResponse | null>(null);
   const [currentMatchIdx, setCurrentMatchIdx] = useState<number>(0);
   const [isSearching, setIsSearching] = useState(false);
   const [showResultsPanel, setShowResultsPanel] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'chat' | 'media'>('chat');
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -80,7 +103,9 @@ export function ChatView({
   const jumpTargetRef = useRef(jumpTarget);
   jumpTargetRef.current = jumpTarget;
   const handledJumpRef = useRef<number | null>(null);
-  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
+
+  const searchResults = searchResponse?.matches ?? [];
+  const totalSearchMatches = searchResponse?.total_matches ?? 0;
 
   useEffect(() => {
     return () => {
@@ -93,20 +118,42 @@ export function ChatView({
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
+  const openMenu = useCallback((e: React.MouseEvent, items: ContextMenuItem[]) => {
+    setContextMenu({ x: e.clientX, y: e.clientY, items });
+  }, []);
+
+  const fetchPage = useCallback(
+    (channel: ChannelInfo, offset: number | null, limit: number) =>
+      invoke<MessagesResponse>('get_messages', {
+        dataPath,
+        folderNames: channel.folder_names,
+        limit,
+        offset,
+      }),
+    [dataPath]
+  );
+
+  const applyWindow = useCallback((response: MessagesResponse, offset: number | null) => {
+    setMessages(response.messages);
+    setTotalMessages(response.total);
+    setLoadedOffset(offset ?? Math.max(0, response.total - response.messages.length));
+  }, []);
+
   const hasMoreOlder = loadedOffset > 0;
   const hasMoreNewer = loadedOffset + messages.length < totalMessages;
 
   useEffect(() => {
+    setFilters(EMPTY_FILTERS);
+    setSearchResponse(null);
+    setCurrentMatchIdx(0);
+    setViewMode('chat');
+    setScrollTarget(null);
+
     if (!selectedChannel || !dataPath) {
       setMessages([]);
       setTotalMessages(0);
       setLoadedOffset(0);
       setSearchQuery('');
-      setFilters(EMPTY_FILTERS);
-      setSearchResults([]);
-      setTotalSearchMatches(0);
-      setCurrentMatchIdx(0);
-      setViewMode('chat');
       return;
     }
 
@@ -116,51 +163,63 @@ export function ChatView({
         ? pending
         : null;
     if (jump) handledJumpRef.current = jump.nonce;
-    const jumpOffset = jump ? Math.max(0, jump.totalIndex - Math.floor(PAGE_SIZE / 2)) : null;
+    const offset = jump ? Math.max(0, jump.totalIndex - Math.floor(PAGE_SIZE / 2)) : null;
 
     shouldScrollToBottomRef.current = !jump;
     let cancelled = false;
+    setLoading(true);
+    setLoadError(null);
 
-    const loadInitialMessages = async () => {
-      setLoading(true);
-      setLoadError(null);
-      try {
-        const response: MessagesResponse = await invoke('get_messages', {
-          dataPath,
-          folderNames: selectedChannel.folder_names,
-          limit: PAGE_SIZE,
-          offset: jumpOffset,
-        });
+    fetchPage(selectedChannel, offset, PAGE_SIZE)
+      .then(response => {
         if (cancelled) return;
-
-        setMessages(response.messages);
-        setTotalMessages(response.total);
-        setLoadedOffset(
-          jumpOffset ?? Math.max(0, response.total - response.messages.length)
-        );
+        applyWindow(response, offset);
         if (jump) setScrollTarget(jump.messageId);
-      } catch (e) {
+      })
+      .catch(e => {
         if (cancelled) return;
-        setMessages([]);
-        setTotalMessages(0);
-        setLoadedOffset(0);
+        applyWindow({ messages: [], total: 0 }, 0);
         setLoadError(typeof e === 'string' ? e : 'Could not read this channel.');
-      } finally {
+      })
+      .finally(() => {
         if (!cancelled) setLoading(false);
-      }
-    };
-
-    loadInitialMessages();
-    setFilters(EMPTY_FILTERS);
-    setSearchResults([]);
-    setTotalSearchMatches(0);
-    setCurrentMatchIdx(0);
-    setViewMode('chat');
+      });
 
     return () => {
       cancelled = true;
     };
   }, [selectedChannel, dataPath]);
+
+  const loadWindow = useCallback(
+    async (offset: number | null, failure: string, onLoaded: () => void) => {
+      if (!selectedChannel) return;
+      const channel = selectedChannel;
+      setLoading(true);
+      try {
+        const response = await fetchPage(channel, offset, PAGE_SIZE);
+        if (activeChannelRef.current !== channel) return;
+        applyWindow(response, offset);
+        onLoaded();
+      } catch {
+        if (activeChannelRef.current === channel) showToast(failure);
+      } finally {
+        if (activeChannelRef.current === channel) setLoading(false);
+      }
+    },
+    [selectedChannel, fetchPage, applyWindow, showToast]
+  );
+
+  const showMessage = useCallback(
+    (messageId: string, totalIndex: number, failure: string) => {
+      if (messages.some(m => m.id === messageId)) {
+        setScrollTarget(messageId);
+        return;
+      }
+      const offset = Math.max(0, totalIndex - Math.floor(PAGE_SIZE / 2));
+      loadWindow(offset, failure, () => setScrollTarget(messageId));
+    },
+    [messages, loadWindow]
+  );
 
   useEffect(() => {
     const target = jumpTarget;
@@ -169,39 +228,13 @@ export function ChatView({
     handledJumpRef.current = target.nonce;
 
     setViewMode('chat');
-    setFilters(EMPTY_FILTERS);
-    if (messages.some(m => m.id === target.messageId)) {
-      setScrollTarget(target.messageId);
-      return;
-    }
-
-    const channel = selectedChannel;
-    const offset = Math.max(0, target.totalIndex - Math.floor(PAGE_SIZE / 2));
-    setLoading(true);
-    invoke<MessagesResponse>('get_messages', {
-      dataPath,
-      folderNames: channel.folder_names,
-      limit: PAGE_SIZE,
-      offset,
-    })
-      .then(response => {
-        if (activeChannelRef.current !== channel) return;
-        setMessages(response.messages);
-        setTotalMessages(response.total);
-        setLoadedOffset(offset);
-        setScrollTarget(target.messageId);
-      })
-      .catch(() => {
-        if (activeChannelRef.current === channel) showToast('Could not load messages around this result');
-      })
-      .finally(() => {
-        if (activeChannelRef.current === channel) setLoading(false);
-      });
+    showMessage(target.messageId, target.totalIndex, 'Could not load messages around this result');
   }, [jumpTarget]);
 
   const loadOlderMessages = useCallback(async () => {
-    if (loadingOlder || loading || !hasMoreOlder || !selectedChannel || !dataPath) return;
+    if (loadingOlder || loading || !hasMoreOlder || !selectedChannel) return;
 
+    const channel = selectedChannel;
     setLoadingOlder(true);
     const fetchLimit = Math.min(PAGE_SIZE, loadedOffset);
     const fetchOffset = loadedOffset - fetchLimit;
@@ -211,13 +244,8 @@ export function ChatView({
       const prevScrollHeight = scrollEl ? scrollEl.scrollHeight : 0;
       const prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
 
-      const response: MessagesResponse = await invoke('get_messages', {
-        dataPath,
-        folderNames: selectedChannel.folder_names,
-        limit: fetchLimit,
-        offset: fetchOffset,
-      });
-      if (activeChannelRef.current !== selectedChannel) return;
+      const response = await fetchPage(channel, fetchOffset, fetchLimit);
+      if (activeChannelRef.current !== channel) return;
 
       setMessages(prev => [...response.messages, ...prev]);
       setLoadedOffset(fetchOffset);
@@ -230,59 +258,37 @@ export function ChatView({
         }
       });
     } catch {
-      if (activeChannelRef.current === selectedChannel) showToast('Could not load older messages');
+      if (activeChannelRef.current === channel) showToast('Could not load older messages');
     } finally {
       setLoadingOlder(false);
     }
-  }, [loadingOlder, loading, hasMoreOlder, selectedChannel, dataPath, loadedOffset, showToast]);
+  }, [loadingOlder, loading, hasMoreOlder, selectedChannel, loadedOffset, fetchPage, showToast]);
 
   const loadNewerMessages = useCallback(async () => {
-    if (loadingNewer || loading || !hasMoreNewer || !selectedChannel || !dataPath) return;
+    if (loadingNewer || loading || !hasMoreNewer || !selectedChannel) return;
 
+    const channel = selectedChannel;
     setLoadingNewer(true);
     const currentEnd = loadedOffset + messages.length;
-    const fetchLimit = Math.min(PAGE_SIZE, totalMessages - currentEnd);
-    const fetchOffset = currentEnd;
 
     try {
-      const response: MessagesResponse = await invoke('get_messages', {
-        dataPath,
-        folderNames: selectedChannel.folder_names,
-        limit: fetchLimit,
-        offset: fetchOffset,
-      });
-      if (activeChannelRef.current !== selectedChannel) return;
+      const response = await fetchPage(channel, currentEnd, Math.min(PAGE_SIZE, totalMessages - currentEnd));
+      if (activeChannelRef.current !== channel) return;
 
       setMessages(prev => [...prev, ...response.messages]);
       setTotalMessages(response.total);
     } catch {
-      if (activeChannelRef.current === selectedChannel) showToast('Could not load newer messages');
+      if (activeChannelRef.current === channel) showToast('Could not load newer messages');
     } finally {
       setLoadingNewer(false);
     }
-  }, [loadingNewer, loading, hasMoreNewer, selectedChannel, dataPath, loadedOffset, messages.length, totalMessages, showToast]);
+  }, [loadingNewer, loading, hasMoreNewer, selectedChannel, loadedOffset, messages.length, totalMessages, fetchPage, showToast]);
 
-  const jumpToPresent = useCallback(async () => {
-    if (!selectedChannel || !dataPath) return;
-    setLoading(true);
-    try {
-      const response: MessagesResponse = await invoke('get_messages', {
-        dataPath,
-        folderNames: selectedChannel.folder_names,
-        limit: PAGE_SIZE,
-        offset: null,
-      });
-      if (activeChannelRef.current !== selectedChannel) return;
-      setMessages(response.messages);
-      setTotalMessages(response.total);
-      setLoadedOffset(Math.max(0, response.total - response.messages.length));
+  const jumpToPresent = useCallback(() => {
+    loadWindow(null, 'Could not jump to present', () => {
       shouldScrollToBottomRef.current = true;
-    } catch {
-      if (activeChannelRef.current === selectedChannel) showToast('Could not jump to present');
-    } finally {
-      if (activeChannelRef.current === selectedChannel) setLoading(false);
-    }
-  }, [selectedChannel, dataPath, showToast]);
+    });
+  }, [loadWindow]);
 
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
@@ -321,16 +327,19 @@ export function ChatView({
   useEffect(() => {
     if (!scrollTarget || loading) return;
     const index = filteredMessages.findIndex(m => m.id === scrollTarget);
-    if (index === -1) return;
+    if (index === -1) {
+      if (activeFilterCount > 0 && messages.some(m => m.id === scrollTarget)) setFilters(EMPTY_FILTERS);
+      return;
+    }
 
     setScrollTarget(null);
     virtualizer.scrollToIndex(index, { align: 'center' });
     const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: 'center' }));
     setHighlightedMessageId(scrollTarget);
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2500);
+    highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2000);
     return () => cancelAnimationFrame(frame);
-  }, [scrollTarget, loading, filteredMessages, virtualizer]);
+  }, [scrollTarget, loading, filteredMessages, messages, activeFilterCount, virtualizer]);
 
   useEffect(() => {
     if (searchQuery || filteredMessages.length === 0) return;
@@ -359,8 +368,7 @@ export function ChatView({
   useEffect(() => {
     const trimmed = searchQuery.trim();
     if (!trimmed || !selectedChannel || !dataPath) {
-      setSearchResults([]);
-      setTotalSearchMatches(0);
+      setSearchResponse(null);
       setCurrentMatchIdx(0);
       setIsSearching(false);
       return;
@@ -382,44 +390,16 @@ export function ChatView({
         });
         if (cancelled) return;
 
-        setSearchResults(response.matches);
-        setTotalSearchMatches(response.total_matches);
-
-        if (response.matches.length > 0) {
-          const targetMatchIdx = response.matches.length - 1;
-          setCurrentMatchIdx(targetMatchIdx);
-          const targetMatch = response.matches[targetMatchIdx];
-
-          const existingIdx = messages.findIndex(m => m.id === targetMatch.message.id);
-          if (existingIdx !== -1) {
-            virtualizer.scrollToIndex(existingIdx, { align: 'center' });
-          } else {
-            const fetchOffset = Math.max(0, targetMatch.total_index - Math.floor(PAGE_SIZE / 2));
-            const resp: MessagesResponse = await invoke('get_messages', {
-              dataPath,
-              folderNames: selectedChannel.folder_names,
-              limit: PAGE_SIZE,
-              offset: fetchOffset,
-            });
-            if (cancelled) return;
-            setMessages(resp.messages);
-            setTotalMessages(resp.total);
-            setLoadedOffset(fetchOffset);
-
-            requestAnimationFrame(() => {
-              const newIdx = resp.messages.findIndex(m => m.id === targetMatch.message.id);
-              if (newIdx !== -1) {
-                virtualizer.scrollToIndex(newIdx, { align: 'center' });
-              }
-            });
-          }
-        } else {
-          setCurrentMatchIdx(0);
+        setSearchResponse(response);
+        const lastIdx = response.matches.length - 1;
+        setCurrentMatchIdx(Math.max(0, lastIdx));
+        if (lastIdx >= 0) {
+          const latest = response.matches[lastIdx];
+          showMessage(latest.message.id, latest.total_index, 'Could not load messages around this result');
         }
       } catch {
         if (cancelled) return;
-        setSearchResults([]);
-        setTotalSearchMatches(0);
+        setSearchResponse(null);
         setCurrentMatchIdx(0);
       } finally {
         if (!cancelled) setIsSearching(false);
@@ -441,75 +421,31 @@ export function ChatView({
   ]);
 
   const jumpToMatch = useCallback(
-    async (idxInMatches: number) => {
-      if (searchResults.length === 0 || !dataPath || !selectedChannel) return;
+    (idxInMatches: number) => {
+      if (searchResults.length === 0) return;
       const boundedIdx = (idxInMatches + searchResults.length) % searchResults.length;
       setCurrentMatchIdx(boundedIdx);
 
-      const targetMatch = searchResults[boundedIdx];
-      const targetId = targetMatch.message.id;
-      const targetTotalIndex = targetMatch.total_index;
-
-      const existingIndex = filteredMessages.findIndex(m => m.id === targetId);
-      if (existingIndex !== -1) {
-        virtualizer.scrollToIndex(existingIndex, { align: 'center' });
-        setHighlightedMessageId(targetId);
-        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-        highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2000);
-        return;
-      }
-
-      const fetchOffset = Math.max(0, targetTotalIndex - Math.floor(PAGE_SIZE / 2));
-      setLoading(true);
-      try {
-        const response: MessagesResponse = await invoke('get_messages', {
-          dataPath,
-          folderNames: selectedChannel.folder_names,
-          limit: PAGE_SIZE,
-          offset: fetchOffset,
-        });
-        if (activeChannelRef.current !== selectedChannel) return;
-        setMessages(response.messages);
-        setTotalMessages(response.total);
-        setLoadedOffset(fetchOffset);
-
-        requestAnimationFrame(() => {
-          const newIdx = response.messages.findIndex(m => m.id === targetId);
-          if (newIdx !== -1) {
-            virtualizer.scrollToIndex(newIdx, { align: 'center' });
-            setHighlightedMessageId(targetId);
-            if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-            highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2000);
-          }
-        });
-      } catch {
-        if (activeChannelRef.current === selectedChannel) showToast('Could not load messages around this result');
-      } finally {
-        if (activeChannelRef.current === selectedChannel) setLoading(false);
-      }
+      const match = searchResults[boundedIdx];
+      showMessage(match.message.id, match.total_index, 'Could not load messages around this result');
     },
-    [searchResults, dataPath, selectedChannel, filteredMessages, virtualizer, showToast]
+    [searchResults, showMessage]
   );
 
   const handleJumpToMessage = useCallback(
     async (messageId: string) => {
-      const targetIdx = filteredMessages.findIndex(m => m.id === messageId);
-      if (targetIdx !== -1) {
-        virtualizer.scrollToIndex(targetIdx, { align: 'center' });
-        setHighlightedMessageId(messageId);
-        if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-        highlightTimerRef.current = window.setTimeout(() => {
-          setHighlightedMessageId(null);
-        }, 2000);
+      if (messages.some(m => m.id === messageId)) {
+        setScrollTarget(messageId);
         return;
       }
-
       if (!dataPath || !selectedChannel) return;
 
+      const channel = selectedChannel;
+      const failure = `Could not load referenced message (${messageId})`;
       try {
         const searchRes: SearchResponse = await invoke('search_channel_messages', {
           dataPath,
-          folderNames: selectedChannel.folder_names,
+          folderNames: channel.folder_names,
           query: messageId,
           dateMode: null,
           dateFrom: null,
@@ -517,48 +453,24 @@ export function ChatView({
           attachmentMode: null,
           limit: 1,
         });
-        if (activeChannelRef.current !== selectedChannel) return;
+        if (activeChannelRef.current !== channel) return;
 
         const match = searchRes.matches.find(m => m.message.id === messageId);
         if (!match) {
           showToast(`Referenced message (${messageId}) was not found in this archive`);
           return;
         }
-
-        const fetchOffset = Math.max(0, match.total_index - Math.floor(PAGE_SIZE / 2));
-        setLoading(true);
-        const response: MessagesResponse = await invoke('get_messages', {
-          dataPath,
-          folderNames: selectedChannel.folder_names,
-          limit: PAGE_SIZE,
-          offset: fetchOffset,
-        });
-        if (activeChannelRef.current !== selectedChannel) return;
-        setMessages(response.messages);
-        setTotalMessages(response.total);
-        setLoadedOffset(fetchOffset);
-
-        requestAnimationFrame(() => {
-          const newIdx = response.messages.findIndex(m => m.id === messageId);
-          if (newIdx !== -1) {
-            virtualizer.scrollToIndex(newIdx, { align: 'center' });
-            setHighlightedMessageId(messageId);
-            if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-            highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2000);
-          }
-        });
+        showMessage(messageId, match.total_index, failure);
       } catch {
-        if (activeChannelRef.current === selectedChannel) showToast(`Could not load referenced message (${messageId})`);
-      } finally {
-        if (activeChannelRef.current === selectedChannel) setLoading(false);
+        if (activeChannelRef.current === channel) showToast(failure);
       }
     },
-    [filteredMessages, dataPath, selectedChannel, virtualizer, showToast]
+    [messages, dataPath, selectedChannel, showMessage, showToast]
   );
 
   const handleReplyContextMenu = useCallback(
     (e: React.MouseEvent, messageId: string) => {
-      const items: ContextMenuItem[] = [
+      openMenu(e, [
         { label: 'Copy Referenced Message ID', value: messageId, badge: 'ID' },
         {
           label: 'Jump to Message',
@@ -571,11 +483,9 @@ export function ChatView({
             setShowResultsPanel(true);
           },
         },
-      ];
-
-      setContextMenu({ x: e.clientX, y: e.clientY, items });
+      ]);
     },
-    [handleJumpToMessage]
+    [openMenu, handleJumpToMessage]
   );
 
   const handleMessageContextMenu = useCallback(
@@ -606,30 +516,9 @@ export function ChatView({
         });
       }
 
-      setContextMenu({ x: e.clientX, y: e.clientY, items });
+      openMenu(e, items);
     },
-    [dataPath, selectedChannel, showToast]
-  );
-
-  const handleMentionContextMenu = useCallback(
-    (e: React.MouseEvent, userId: string, username?: string) => {
-      const items: ContextMenuItem[] = [{ label: 'Copy User ID', value: userId, badge: 'ID' }];
-
-      if (username) {
-        items.push({ label: 'Copy Username', value: username });
-      }
-
-      items.push({
-        label: 'Open Direct Message',
-        onClick: () => {
-          const found = onOpenDmByUserId?.(userId);
-          if (!found) showToast('No DM found for this user');
-        },
-      });
-
-      setContextMenu({ x: e.clientX, y: e.clientY, items });
-    },
-    [onOpenDmByUserId, showToast]
+    [dataPath, selectedChannel, openMenu, showToast]
   );
 
   const handleMentionClick = useCallback(
@@ -638,6 +527,17 @@ export function ChatView({
       if (!found) showToast('No DM found for this user');
     },
     [onOpenDmByUserId, showToast]
+  );
+
+  const handleMentionContextMenu = useCallback(
+    (e: React.MouseEvent, userId: string, username?: string) => {
+      openMenu(e, [
+        { label: 'Copy User ID', value: userId, badge: 'ID' },
+        ...(username ? [{ label: 'Copy Username', value: username }] : []),
+        { label: 'Open Direct Message', onClick: () => handleMentionClick(userId) },
+      ]);
+    },
+    [openMenu, handleMentionClick]
   );
 
   const handleChannelClick = useCallback(
@@ -650,52 +550,47 @@ export function ChatView({
 
   const handleChannelContextMenu = useCallback(
     (e: React.MouseEvent, channelId: string, channelName?: string) => {
-      const items: ContextMenuItem[] = [{ label: 'Copy Channel ID', value: channelId, badge: 'ID' }];
-
-      if (channelName) {
-        items.push({ label: 'Copy Channel Name', value: channelName });
-      }
-
-      items.push({
-        label: 'Open Channel',
-        onClick: () => {
-          const found = onOpenChannelById?.(channelId);
-          if (!found) showToast('Channel not found in this archive');
-        },
-      });
-
-      setContextMenu({ x: e.clientX, y: e.clientY, items });
+      openMenu(e, [
+        { label: 'Copy Channel ID', value: channelId, badge: 'ID' },
+        ...(channelName ? [{ label: 'Copy Channel Name', value: channelName }] : []),
+        { label: 'Open Channel', onClick: () => handleChannelClick(channelId) },
+      ]);
     },
-    [onOpenChannelById, showToast]
+    [openMenu, handleChannelClick]
   );
 
-  const handleLinkContextMenu = useCallback((e: React.MouseEvent, url: string) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleLinkContextMenu = useCallback(
+    (e: React.MouseEvent, url: string) => {
+      e.preventDefault();
+      e.stopPropagation();
 
-    const items: ContextMenuItem[] = [
-      { label: 'Copy Link', value: url },
-      {
-        label: 'Open Link in Browser',
-        onClick: () => {
-          openUrl(url).catch(err => {
-            console.error('Failed to open link:', err);
-            window.open(url, '_blank');
-          });
+      openMenu(e, [
+        { label: 'Copy Link', value: url },
+        {
+          label: 'Open Link in Browser',
+          onClick: () => {
+            openUrl(url).catch(err => {
+              console.error('Failed to open link:', err);
+              window.open(url, '_blank');
+            });
+          },
         },
-      },
-    ];
+      ]);
+    },
+    [openMenu]
+  );
 
-    setContextMenu({ x: e.clientX, y: e.clientY, items });
-  }, []);
+  const clearSearch = () => {
+    setSearchQuery('');
+    setShowResultsPanel(false);
+  };
 
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       jumpToMatch(e.shiftKey ? currentMatchIdx - 1 : currentMatchIdx + 1);
     } else if (e.key === 'Escape') {
-      setSearchQuery('');
-      setShowResultsPanel(false);
+      clearSearch();
       searchInputRef.current?.blur();
     }
   };
@@ -753,7 +648,7 @@ export function ChatView({
                   onClick={() => jumpToMatch(currentMatchIdx - 1)}
                   disabled={searchResults.length === 0}
                   title="Previous match (Shift+Enter)"
-                  className="px-1 py-0.5 hover:bg-dc-hover rounded text-dc-text-muted hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-default text-[10px]"
+                  className={`${SEARCH_NAV_BUTTON} text-[10px]`}
                 >
                   ▲
                 </button>
@@ -762,18 +657,15 @@ export function ChatView({
                   onClick={() => jumpToMatch(currentMatchIdx + 1)}
                   disabled={searchResults.length === 0}
                   title="Next match (Enter)"
-                  className="px-1 py-0.5 hover:bg-dc-hover rounded text-dc-text-muted hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-default text-[10px]"
+                  className={`${SEARCH_NAV_BUTTON} text-[10px]`}
                 >
                   ▼
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setShowResultsPanel(false);
-                  }}
+                  onClick={clearSearch}
                   title="Clear search (Esc)"
-                  className="px-1 py-0.5 hover:bg-dc-hover rounded text-dc-text-muted hover:text-white cursor-pointer text-xs"
+                  className={`${SEARCH_NAV_BUTTON} text-xs`}
                 >
                   ✕
                 </button>
@@ -791,11 +683,7 @@ export function ChatView({
           <button
             type="button"
             onClick={() => setViewMode(prev => (prev === 'media' ? 'chat' : 'media'))}
-            className={`px-2 py-1 rounded text-xs transition-colors cursor-pointer border flex items-center gap-1.5 ${
-              viewMode === 'media'
-                ? 'bg-dc-accent text-white border-dc-accent'
-                : 'bg-dc-dark text-dc-text-muted hover:text-white border-dc-input/60'
-            }`}
+            className={`${toggleButtonClass(viewMode === 'media')} flex items-center gap-1.5`}
             title={viewMode === 'media' ? 'Back to Messages' : 'View Photos, Videos & Files'}
           >
             <ImageIcon className="w-3.5 h-3.5" />
@@ -818,11 +706,7 @@ export function ChatView({
               type="button"
               onClick={() => setShowResultsPanel(!showResultsPanel)}
               title={showResultsPanel ? 'Hide search results list' : 'Show all search results list'}
-              className={`px-2 py-1 rounded text-xs transition-colors cursor-pointer border ${
-                showResultsPanel
-                  ? 'bg-dc-accent text-white border-dc-accent'
-                  : 'bg-dc-dark text-dc-text-muted hover:text-white border-dc-input/60'
-              }`}
+              className={toggleButtonClass(showResultsPanel)}
             >
               List ({totalSearchMatches})
             </button>
@@ -888,16 +772,15 @@ export function ChatView({
                     {item.index === 0 && (
                       hasMoreOlder ? (
                         <div className="flex justify-center pb-4">
-                          <button
-                            type="button"
+                          <LoadMoreButton
                             onClick={loadOlderMessages}
-                            disabled={loadingOlder}
-                            className="px-3 py-1.5 rounded text-xs bg-dc-dark hover:bg-dc-hover text-dc-text border border-dc-input/60 transition-colors cursor-pointer disabled:opacity-50"
-                          >
-                            {loadingOlder
-                              ? 'Loading older messages...'
-                              : `Load older messages (${loadedOffset.toLocaleString()} remaining)`}
-                          </button>
+                            busy={loadingOlder}
+                            label={
+                              loadingOlder
+                                ? 'Loading older messages...'
+                                : `Load older messages (${loadedOffset.toLocaleString()} remaining)`
+                            }
+                          />
                         </div>
                       ) : (
                         <div className="pt-4 pb-6 px-2 select-none">
@@ -936,16 +819,15 @@ export function ChatView({
                     />
                     {isLastItem && hasMoreNewer && (
                       <div className="flex justify-center pt-4 pb-2">
-                        <button
-                          type="button"
+                        <LoadMoreButton
                           onClick={loadNewerMessages}
-                          disabled={loadingNewer}
-                          className="px-3 py-1.5 rounded text-xs bg-dc-dark hover:bg-dc-hover text-dc-text border border-dc-input/60 transition-colors cursor-pointer disabled:opacity-50"
-                        >
-                          {loadingNewer
-                            ? 'Loading newer messages...'
-                            : `Load newer messages (${(totalMessages - (loadedOffset + messages.length)).toLocaleString()} remaining)`}
-                        </button>
+                          busy={loadingNewer}
+                          label={
+                            loadingNewer
+                              ? 'Loading newer messages...'
+                              : `Load newer messages (${(totalMessages - (loadedOffset + messages.length)).toLocaleString()} remaining)`
+                          }
+                        />
                       </div>
                     )}
                   </div>
