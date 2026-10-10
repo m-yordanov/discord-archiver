@@ -6,6 +6,7 @@ use crate::models::{
     ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
     SearchResponse,
 };
+use crate::export::{self, ExportResult};
 use crate::media::{is_audio, is_image, is_other_file, is_video};
 use crate::parser;
 use crate::search::{self, GlobalSearchResponse, SearchChannel, SearchCorpus};
@@ -358,6 +359,23 @@ pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
         }
     }
     items
+}
+
+#[tauri::command]
+pub async fn export_conversation(
+    data_path: Option<String>,
+    folder_names: Vec<String>,
+    format: String,
+    title: String,
+    save_path: String,
+    app: AppHandle,
+) -> Result<ExportResult, String> {
+    run_blocking(app, move |state| {
+        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+            export::write_export(messages, &format, &title, &save_path)
+        })?
+    })
+    .await
 }
 
 #[tauri::command]

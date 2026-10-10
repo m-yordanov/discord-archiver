@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import { ChannelInfo, Message, MessageJump, MessagesResponse, SearchResponse } from '../types';
+import { save } from '@tauri-apps/plugin-dialog';
+import { ChannelInfo, ExportResult, Message, MessageJump, MessagesResponse, SearchResponse } from '../types';
 import { MessageItem } from './MessageItem';
 import { ImageModal } from './ImageModal';
 import { JsonModal } from './JsonModal';
@@ -10,11 +11,19 @@ import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SearchFilters } from './SearchFilters';
 import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
 import { isAudio } from '../attachments';
-import { Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
+import { Download, Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
 import { MediaGallery } from './MediaGallery';
 import { useSettings } from '../settings';
 
 const PAGE_SIZE = 500;
+
+type ExportFormat = 'html' | 'text' | 'json';
+
+const EXPORT_FORMATS: { format: ExportFormat; label: string; extension: string }[] = [
+  { format: 'html', label: 'Export as HTML', extension: 'html' },
+  { format: 'text', label: 'Export as Text', extension: 'txt' },
+  { format: 'json', label: 'Export as JSON', extension: 'json' },
+];
 
 const shouldShowHeader = (currentMsg: Message, prevMsg: Message | null) => {
   if (!prevMsg) return true;
@@ -84,7 +93,8 @@ export function ChatView({
   const [currentMatchIdx, setCurrentMatchIdx] = useState<number>(0);
   const [isSearching, setIsSearching] = useState(false);
   const [showResultsPanel, setShowResultsPanel] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ text: string; success: boolean } | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'chat' | 'media'>('chat');
@@ -113,9 +123,9 @@ export function ChatView({
     };
   }, []);
 
-  const showToast = useCallback((text: string) => {
-    setToastMessage(text);
-    setTimeout(() => setToastMessage(null), 3000);
+  const showToast = useCallback((text: string, success = false) => {
+    setToast({ text, success });
+    setTimeout(() => setToast(null), 3000);
   }, []);
 
   const openMenu = useCallback((e: React.MouseEvent, items: ContextMenuItem[]) => {
@@ -580,6 +590,50 @@ export function ChatView({
     [openMenu]
   );
 
+  const exportConversation = async (format: ExportFormat, extension: string) => {
+    if (!selectedChannel || isExporting) return;
+    const channel = selectedChannel;
+    const isDm = channel.channel_type === 'DM' || channel.channel_type === 'GROUP_DM';
+    const name = channel.name || 'conversation';
+
+    const savePath = await save({
+      defaultPath: `${name.replace(/[\\/:*?"<>|]/g, '_')}.${extension}`,
+      filters: [{ name: format.toUpperCase(), extensions: [extension] }],
+    });
+    if (!savePath) return;
+
+    setIsExporting(true);
+    try {
+      const result = await invoke<ExportResult>('export_conversation', {
+        dataPath,
+        folderNames: channel.folder_names,
+        format,
+        title: `${isDm ? '@' : '#'}${name}`,
+        savePath,
+      });
+      const mb = result.total_bytes / (1024 * 1024);
+      const size =
+        mb < 0.1
+          ? `${(result.total_bytes / 1024).toFixed(1)} KB`
+          : `${mb.toFixed(1)} MB`;
+      showToast(`Exported ${result.count.toLocaleString()} messages (${size})`, true);
+    } catch (e) {
+      showToast(typeof e === 'string' ? e : 'Could not export this conversation');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportMenu = (e: React.MouseEvent) => {
+    openMenu(
+      e,
+      EXPORT_FORMATS.map(({ format, label, extension }) => ({
+        label,
+        onClick: () => exportConversation(format, extension),
+      }))
+    );
+  };
+
   const clearSearch = () => {
     setSearchQuery('');
     setShowResultsPanel(false);
@@ -688,6 +742,17 @@ export function ChatView({
           >
             <ImageIcon className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Media</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportMenu}
+            disabled={isExporting}
+            className={`${toggleButtonClass(false)} flex items-center gap-1.5 disabled:opacity-50`}
+            title="Export this conversation as HTML, text or JSON"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{isExporting ? 'Exporting…' : 'Export'}</span>
           </button>
 
           {onOpenSettings && (
@@ -924,10 +989,14 @@ export function ChatView({
         />
       )}
 
-      {toastMessage && (
+      {toast && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 bg-dc-dark text-white text-xs px-4 py-2.5 rounded-md shadow-2xl border border-dc-input flex items-center gap-2 select-none pointer-events-none">
-          <span className="text-amber-400">⚠️</span>
-          <span className="font-medium">{toastMessage}</span>
+          {toast.success ? (
+            <span className="text-dc-green font-bold">✓</span>
+          ) : (
+            <span className="text-amber-400">⚠️</span>
+          )}
+          <span className="font-medium">{toast.text}</span>
         </div>
       )}
     </div>

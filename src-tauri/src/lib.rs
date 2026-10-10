@@ -2,6 +2,7 @@ mod archive;
 mod media;
 mod models;
 mod content;
+mod export;
 mod parser;
 mod search;
 mod stats;
@@ -23,6 +24,7 @@ pub fn run() {
             commands::search_all_messages,
             commands::get_channel_media,
             commands::download_channel_media,
+            commands::export_conversation,
             commands::get_cache_info,
             commands::clear_cache,
             commands::open_cache_folder,

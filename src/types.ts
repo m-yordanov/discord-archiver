@@ -123,3 +123,9 @@ export interface MessageJump {
   totalIndex: number;
   nonce: number;
 }
+
+export interface ExportResult {
+  count: number;
+  file_path: string;
+  total_bytes: number;
+}
