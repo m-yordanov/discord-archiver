@@ -135,12 +135,11 @@ export function ChatView({
   const fetchPage = useCallback(
     (channel: ChannelInfo, offset: number | null, limit: number) =>
       invoke<MessagesResponse>('get_messages', {
-        dataPath,
         folderNames: channel.folder_names,
         limit,
         offset,
       }),
-    [dataPath]
+    []
   );
 
   const applyWindow = useCallback((response: MessagesResponse, offset: number | null) => {
@@ -389,7 +388,6 @@ export function ChatView({
     const timer = setTimeout(async () => {
       try {
         const response: SearchResponse = await invoke('search_channel_messages', {
-          dataPath,
           folderNames: selectedChannel.folder_names,
           query: trimmed,
           dateMode: filters.dateMode || null,
@@ -454,7 +452,6 @@ export function ChatView({
       const failure = `Could not load referenced message (${messageId})`;
       try {
         const searchRes: SearchResponse = await invoke('search_channel_messages', {
-          dataPath,
           folderNames: channel.folder_names,
           query: messageId,
           dateMode: null,
@@ -514,7 +511,6 @@ export function ChatView({
           onClick: async () => {
             try {
               const json: string = await invoke('get_raw_message', {
-                dataPath,
                 folderNames: selectedChannel.folder_names,
                 messageId: message.id,
               });
@@ -605,7 +601,6 @@ export function ChatView({
     setIsExporting(true);
     try {
       const result = await invoke<ExportResult>('export_conversation', {
-        dataPath,
         folderNames: channel.folder_names,
         format,
         title: `${isDm ? '@' : '#'}${name}`,
@@ -782,7 +777,6 @@ export function ChatView({
       {viewMode === 'media' ? (
         <MediaGallery
           selectedChannel={selectedChannel}
-          dataPath={dataPath}
           onClose={() => setViewMode('chat')}
           onJumpToMessage={messageId => {
             setViewMode('chat');

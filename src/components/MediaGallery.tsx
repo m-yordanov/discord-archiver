@@ -9,7 +9,6 @@ import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
 
 interface MediaGalleryProps {
   selectedChannel: ChannelInfo;
-  dataPath: string | null;
   onClose: () => void;
   onJumpToMessage: (messageId: string) => void;
   onImageClick: (url: string) => void;
@@ -131,7 +130,6 @@ function GalleryImageItem({
 
 export function MediaGallery({
   selectedChannel,
-  dataPath,
   onClose,
   onJumpToMessage,
   onImageClick,
@@ -158,7 +156,6 @@ export function MediaGallery({
     setError(null);
 
     invoke<ChannelMediaItem[]>('get_channel_media', {
-      dataPath,
       folderNames: selectedChannel.folder_names,
     })
       .then(res => {
@@ -177,7 +174,7 @@ export function MediaGallery({
     return () => {
       isCancelled = true;
     };
-  }, [dataPath, selectedChannel]);
+  }, [selectedChannel]);
 
   const counts = useMemo(() => {
     return {
@@ -242,7 +239,6 @@ export function MediaGallery({
     setIsDownloading(true);
     try {
       const result = await invoke<DownloadResult>('download_channel_media', {
-        dataPath,
         folderNames: selectedChannel.folder_names,
         savePath: filePath,
       });

@@ -22,7 +22,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 zip = "2.1"
 ureq = { version = "3.4.2", features = ["json"] }
 

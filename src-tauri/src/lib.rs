@@ -18,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::load_data_package,
+            commands::close_package,
             commands::get_messages,
             commands::get_raw_message,
             commands::search_channel_messages,

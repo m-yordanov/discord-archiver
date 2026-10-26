@@ -1,5 +1,9 @@
+use serde::de::{self, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt;
 
 pub fn id_to_string(value: &serde_json::Value) -> Option<String> {
     match value {
@@ -9,15 +13,98 @@ pub fn id_to_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
+pub fn parse_records<'a, T: Deserialize<'a>>(text: &'a str) -> Vec<T> {
+    serde_json::from_str::<Vec<&'a RawValue>>(text)
+        .map(|records| {
+            records
+                .into_iter()
+                .filter_map(|record| serde_json::from_str(record.get()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+struct LenientText;
+
+impl<'de> Visitor<'de> for LenientText {
+    type Value = Option<Cow<'de, str>>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("any JSON value")
+    }
+
+    fn visit_borrowed_str<E: de::Error>(self, v: &'de str) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Borrowed(v)))
+    }
+
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Owned(v.to_string())))
+    }
+
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Owned(v)))
+    }
+
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Owned(v.to_string())))
+    }
+
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Owned(v.to_string())))
+    }
+
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(Some(Cow::Owned(v.to_string())))
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(None)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(None)
+    }
+}
+
+pub fn lenient_text<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Cow<'de, str>>, D::Error> {
+    deserializer.deserialize_any(LenientText)
+}
+
+fn lenient_owned_text<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    lenient_text(deserializer).map(|text| text.map(Cow::into_owned))
+}
+
 #[derive(Deserialize)]
 pub struct RawMessage {
     #[serde(rename = "ID", alias = "id")]
     pub id: serde_json::Value,
     #[serde(rename = "Timestamp", alias = "timestamp")]
     pub timestamp: String,
-    #[serde(rename = "Contents", alias = "contents", default)]
+    #[serde(rename = "Contents", alias = "contents", default, deserialize_with = "lenient_owned_text")]
     pub contents: Option<String>,
-    #[serde(rename = "Attachments", alias = "attachments", default)]
+    #[serde(rename = "Attachments", alias = "attachments", default, deserialize_with = "lenient_owned_text")]
     pub attachments: Option<String>,
     #[serde(rename = "Stickers", alias = "stickers", default)]
     pub stickers: Option<serde_json::Value>,

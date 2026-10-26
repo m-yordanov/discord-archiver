@@ -142,6 +142,7 @@ export default function App() {
     setStats(null);
     setStatsError(null);
     setJumpTarget(null);
+    invoke('close_package').catch(() => {});
   }, []);
 
   const handleOpenFolder = async () => {

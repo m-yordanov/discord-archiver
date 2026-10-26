@@ -2,6 +2,7 @@ use crate::archive;
 use crate::content::ContentTally;
 use crate::models::*;
 use crate::stats::{self, PackageStats};
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -211,38 +212,36 @@ fn extract_message_reference(raw: &RawMessage) -> Option<MessageReference> {
         }
     }
 
-    if let Some(ref_msg) = &raw.referenced_message {
-        if let serde_json::Value::Object(map) = ref_msg {
-            if message_id.is_none() {
-                message_id = map.get("id").and_then(id_to_string);
-            }
-            if contents.is_none() {
-                contents = map
-                    .get("content")
-                    .or_else(|| map.get("contents"))
-                    .or_else(|| map.get("Contents"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string);
-            }
-            if author.is_none() {
-                if let Some(auth_val) = map.get("author").or_else(|| map.get("Author")) {
-                    match auth_val {
-                        serde_json::Value::Object(amap) => {
-                            author = amap
-                                .get("global_name")
-                                .or_else(|| amap.get("username"))
-                                .or_else(|| amap.get("name"))
-                                .and_then(|v| v.as_str())
-                                .map(str::to_string);
-                        }
-                        serde_json::Value::String(s) => {
-                            let trimmed = s.trim();
-                            if !trimmed.is_empty() {
-                                author = Some(trimmed.to_string());
-                            }
-                        }
-                        _ => {}
+    if let Some(serde_json::Value::Object(map)) = &raw.referenced_message {
+        if message_id.is_none() {
+            message_id = map.get("id").and_then(id_to_string);
+        }
+        if contents.is_none() {
+            contents = map
+                .get("content")
+                .or_else(|| map.get("contents"))
+                .or_else(|| map.get("Contents"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+        }
+        if author.is_none() {
+            if let Some(auth_val) = map.get("author").or_else(|| map.get("Author")) {
+                match auth_val {
+                    serde_json::Value::Object(amap) => {
+                        author = amap
+                            .get("global_name")
+                            .or_else(|| amap.get("username"))
+                            .or_else(|| amap.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
                     }
+                    serde_json::Value::String(s) => {
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            author = Some(trimmed.to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -332,11 +331,13 @@ fn classify_message(
 
 #[derive(Deserialize)]
 struct RawMessageSummary<'a> {
+    #[serde(rename = "ID", alias = "id")]
+    _id: IgnoredAny,
     #[serde(borrow, rename = "Timestamp", alias = "timestamp")]
-    timestamp: Option<&'a str>,
-    #[serde(borrow, rename = "Contents", alias = "contents", default)]
+    timestamp: Cow<'a, str>,
+    #[serde(borrow, rename = "Contents", alias = "contents", default, deserialize_with = "lenient_text")]
     contents: Option<Cow<'a, str>>,
-    #[serde(borrow, rename = "Attachments", alias = "attachments", default)]
+    #[serde(borrow, rename = "Attachments", alias = "attachments", default, deserialize_with = "lenient_text")]
     attachments: Option<Cow<'a, str>>,
     #[serde(rename = "Call", alias = "call", default)]
     call: Option<serde_json::Value>,
@@ -353,9 +354,7 @@ struct ChannelSummary {
 }
 
 fn summarise_messages(text: &str, content: &mut ContentTally) -> ChannelSummary {
-    let Ok(msgs) = serde_json::from_str::<Vec<RawMessageSummary>>(text) else {
-        return ChannelSummary::default();
-    };
+    let msgs: Vec<RawMessageSummary> = parse_records(text);
 
     for msg in &msgs {
         content.add_message(
@@ -367,14 +366,14 @@ fn summarise_messages(text: &str, content: &mut ContentTally) -> ChannelSummary 
     }
 
     let mut hours = HashMap::new();
-    for seconds in msgs.iter().filter_map(|m| m.timestamp).filter_map(stats::epoch_seconds) {
+    for seconds in msgs.iter().filter_map(|m| stats::epoch_seconds(&m.timestamp)) {
         *hours.entry(seconds.div_euclid(3600)).or_insert(0) += 1;
     }
 
     ChannelSummary {
         message_count: msgs.len(),
-        first: msgs.iter().filter_map(|m| m.timestamp).min().map(str::to_string),
-        last: msgs.iter().filter_map(|m| m.timestamp).max().map(str::to_string),
+        first: msgs.iter().map(|m| &m.timestamp).min().map(|t| t.to_string()),
+        last: msgs.iter().map(|m| &m.timestamp).max().map(|t| t.to_string()),
         hours,
     }
 }
@@ -456,7 +455,7 @@ fn merge_duplicate_dms(dms: Vec<ChannelInfo>) -> Vec<ChannelInfo> {
     }
 
     let mut result: Vec<ChannelInfo> = merged.into_values().collect();
-    result.sort_by(|a, b| b.message_count.cmp(&a.message_count));
+    result.sort_by_key(|dm| std::cmp::Reverse(dm.message_count));
     result
 }
 
@@ -640,11 +639,6 @@ pub fn parse_package_source(
     Ok((index, package.source, package_stats))
 }
 
-#[allow(dead_code)]
-pub fn parse_data_package(path: &str) -> Result<DataIndex, String> {
-    parse_package_source(path).map(|(idx, _, _)| idx)
-}
-
 fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
     let stickers = extract_stickers(&raw);
     let embeds = extract_embeds(&raw);
@@ -655,7 +649,7 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
         .attachments
         .as_deref()
         .unwrap_or_default()
-        .split(|c: char| c == ',' || c == ' ' || c == '\n')
+        .split([',', ' ', '\n'])
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
@@ -723,24 +717,13 @@ pub fn load_raw_message_from_source(
     Err("Could not find that message in this channel.".to_string())
 }
 
-pub fn load_raw_message(
-    data_path: &str,
-    folder_names: &[String],
-    message_id: &str,
-) -> Result<String, String> {
-    let mut package = Package::open(data_path)?;
-    load_raw_message_from_source(&mut package.source, folder_names, message_id)
-}
-
 pub fn parse_channel_messages(
     texts: &[String],
     default_user_id: Option<&String>,
 ) -> Vec<Message> {
     let mut raw_msgs: Vec<RawMessage> = Vec::new();
     for text in texts {
-        if let Ok(msgs) = serde_json::from_str::<Vec<RawMessage>>(text) {
-            raw_msgs.extend(msgs);
-        }
+        raw_msgs.extend(parse_records::<RawMessage>(text));
     }
 
     raw_msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
@@ -807,37 +790,6 @@ pub fn read_channel_texts_from_source(
     }
 
     (texts, default_user_id)
-}
-
-pub fn read_channel_texts_from_path(
-    data_path: &str,
-    folder_names: &[String],
-) -> Result<(Vec<String>, Option<String>), String> {
-    let mut package = Package::open(data_path)?;
-    Ok(read_channel_texts_from_source(&mut package.source, folder_names))
-}
-
-#[allow(dead_code)]
-pub fn load_messages_from_source(
-    source: &mut archive::Source,
-    folder_names: &[String],
-    page: usize,
-    page_size: usize,
-) -> Result<MessagesResponse, String> {
-    let (texts, default_user_id) = read_channel_texts_from_source(source, folder_names);
-    let all_messages = parse_channel_messages(&texts, default_user_id.as_ref());
-    Ok(slice_messages(&all_messages, None, None, page, page_size))
-}
-
-#[allow(dead_code)]
-pub fn load_messages(
-    data_path: &str,
-    folder_names: &[String],
-    page: usize,
-    page_size: usize,
-) -> Result<MessagesResponse, String> {
-    let mut package = Package::open(data_path)?;
-    load_messages_from_source(&mut package.source, folder_names, page, page_size)
 }
 
 #[cfg(test)]
@@ -938,6 +890,31 @@ mod tests {
 
     fn fixture() -> String {
         FIXTURE.get_or_init(build_fixture).to_string_lossy().to_string()
+    }
+
+    fn parse_data_package(path: &str) -> Result<DataIndex, String> {
+        parse_package_source(path).map(|(idx, _, _)| idx)
+    }
+
+    fn channel_messages(path: &str, folder_names: &[String]) -> Result<Vec<Message>, String> {
+        let mut source = archive::Source::open(path)?;
+        let (texts, default_user_id) = read_channel_texts_from_source(&mut source, folder_names);
+        Ok(parse_channel_messages(&texts, default_user_id.as_ref()))
+    }
+
+    fn load_messages(
+        path: &str,
+        folder_names: &[String],
+        page: usize,
+        page_size: usize,
+    ) -> Result<MessagesResponse, String> {
+        let messages = channel_messages(path, folder_names)?;
+        Ok(slice_messages(&messages, None, None, page, page_size))
+    }
+
+    fn load_raw_message(path: &str, folder_names: &[String], message_id: &str) -> Result<String, String> {
+        let mut source = archive::Source::open(path)?;
+        load_raw_message_from_source(&mut source, folder_names, message_id)
     }
 
     fn index() -> DataIndex {
@@ -1105,8 +1082,7 @@ mod tests {
     fn window_slice_returns_latest_or_offset_window() {
         let idx = index();
         let folders = &alice(&idx).folder_names;
-        let (texts, default_user_id) = read_channel_texts_from_path(&fixture(), folders).unwrap();
-        let msgs = parse_channel_messages(&texts, default_user_id.as_ref());
+        let msgs = channel_messages(&fixture(), folders).unwrap();
 
         let latest = slice_messages(&msgs, None, Some(2), 0, 0);
         assert_eq!(latest.total, 5);
@@ -1244,5 +1220,33 @@ mod tests {
         assert_eq!(reference.message_id, "88888888888888888");
         assert_eq!(reference.contents.as_deref(), Some("Original text here"));
         assert_eq!(reference.author.as_deref(), Some("Alice In Wonderland"));
+    }
+
+    #[test]
+    fn a_malformed_record_only_drops_itself() {
+        let text = r#"[
+          {"ID":"ok","Timestamp":"2024-04-01T10:00:00.000+00:00","Contents":"kept","Attachments":""},
+          {"ID":"no-time","Contents":"dropped"},
+          null,
+          "not a message",
+          {"Timestamp":"2024-04-01T10:01:00.000+00:00","Contents":"no id, dropped"},
+          {"ID":"number","Timestamp":"2024-04-01T10:02:00.000+00:00","Contents":1234,"Attachments":""},
+          {"ID":"array","Timestamp":"2024-04-01T10:03:00.000+00:00","Contents":"kept \"text\"","Attachments":["https://cdn.example.com/a.png"]}
+        ]"#;
+
+        let messages = parse_channel_messages(&[text.to_string()], None);
+        let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["ok", "number", "array"]);
+        assert_eq!(messages[1].contents, "1234");
+        assert_eq!(messages[2].contents, "kept \"text\"");
+        assert!(messages[2].attachments.is_empty());
+
+        let summary = summarise_messages(text, &mut ContentTally::default());
+        assert_eq!(summary.message_count, messages.len());
+        assert_eq!(summary.first.as_deref(), Some("2024-04-01T10:00:00.000+00:00"));
+        assert_eq!(summary.last.as_deref(), Some("2024-04-01T10:03:00.000+00:00"));
+
+        let indexed: Vec<crate::search::RawSearchMessage> = parse_records(text);
+        assert_eq!(indexed.len(), messages.len());
     }
 }

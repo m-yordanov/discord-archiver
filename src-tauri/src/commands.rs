@@ -50,7 +50,6 @@ where
 
 fn with_channel_messages<T>(
     state: &AppState,
-    data_path: Option<&str>,
     folder_names: &[String],
     read: impl FnOnce(&[Message]) -> T,
 ) -> Result<T, String> {
@@ -63,13 +62,10 @@ fn with_channel_messages<T>(
     if !is_cached {
         let (texts, default_user_id) = {
             let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
-            if let Some(source) = source_guard.as_mut() {
-                parser::read_channel_texts_from_source(source, folder_names)
-            } else if let Some(path) = data_path {
-                parser::read_channel_texts_from_path(path, folder_names)?
-            } else {
-                return Err("No data package loaded.".to_string());
-            }
+            let source = source_guard
+                .as_mut()
+                .ok_or_else(|| "No data package loaded.".to_string())?;
+            parser::read_channel_texts_from_source(source, folder_names)
         };
 
         let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
@@ -97,8 +93,20 @@ pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex
 }
 
 #[tauri::command]
+pub async fn close_package(app: AppHandle) -> Result<(), String> {
+    run_blocking(app, |state| {
+        *state.source.lock().map_err(|e| e.to_string())? = None;
+        *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
+        *state.stats.lock().map_err(|e| e.to_string())? = None;
+        *state.search_channels.lock().map_err(|e| e.to_string())? = Vec::new();
+        *state.search_corpus.lock().map_err(|e| e.to_string())? = None;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn get_messages(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     page: Option<usize>,
     page_size: Option<usize>,
@@ -107,7 +115,7 @@ pub async fn get_messages(
     app: AppHandle,
 ) -> Result<MessagesResponse, String> {
     run_blocking(app, move |state| {
-        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+        with_channel_messages(state, &folder_names, |messages| {
             parser::slice_messages(
                 messages,
                 offset,
@@ -148,20 +156,16 @@ pub async fn search_all_messages(
 
 #[tauri::command]
 pub async fn get_raw_message(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     message_id: String,
     app: AppHandle,
 ) -> Result<String, String> {
     run_blocking(app, move |state| {
         let mut guard = state.source.lock().map_err(|e| e.to_string())?;
-        if let Some(source) = guard.as_mut() {
-            parser::load_raw_message_from_source(source, &folder_names, &message_id)
-        } else if let Some(path) = data_path {
-            parser::load_raw_message(&path, &folder_names, &message_id)
-        } else {
-            Err("No data package loaded.".to_string())
-        }
+        let source = guard
+            .as_mut()
+            .ok_or_else(|| "No data package loaded.".to_string())?;
+        parser::load_raw_message_from_source(source, &folder_names, &message_id)
     })
     .await
 }
@@ -241,7 +245,6 @@ fn matches_date(
 
 #[tauri::command]
 pub async fn search_channel_messages(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     query: String,
     date_mode: Option<String>,
@@ -252,7 +255,7 @@ pub async fn search_channel_messages(
     app: AppHandle,
 ) -> Result<SearchResponse, String> {
     run_blocking(app, move |state| {
-        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+        with_channel_messages(state, &folder_names, |messages| {
             search_messages(
                 messages,
                 &query,
@@ -333,7 +336,7 @@ pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
                 .next()
                 .unwrap_or(url)
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("file")
                 .to_string();
 
@@ -363,7 +366,6 @@ pub fn extract_media_items(messages: &[Message]) -> Vec<ChannelMediaItem> {
 
 #[tauri::command]
 pub async fn export_conversation(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     format: String,
     title: String,
@@ -371,7 +373,7 @@ pub async fn export_conversation(
     app: AppHandle,
 ) -> Result<ExportResult, String> {
     run_blocking(app, move |state| {
-        with_channel_messages(state, data_path.as_deref(), &folder_names, |messages| {
+        with_channel_messages(state, &folder_names, |messages| {
             export::write_export(messages, &format, &title, &save_path)
         })?
     })
@@ -380,12 +382,11 @@ pub async fn export_conversation(
 
 #[tauri::command]
 pub async fn get_channel_media(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     app: AppHandle,
 ) -> Result<Vec<ChannelMediaItem>, String> {
     run_blocking(app, move |state| {
-        with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)
+        with_channel_messages(state, &folder_names, extract_media_items)
     })
     .await
 }
@@ -407,14 +408,12 @@ fn sanitize_filename(name: &str) -> String {
 
 #[tauri::command]
 pub async fn download_channel_media(
-    data_path: Option<String>,
     folder_names: Vec<String>,
     save_path: String,
     app: AppHandle,
 ) -> Result<DownloadResult, String> {
     run_blocking(app, move |state| {
-        let media_items =
-            with_channel_messages(state, data_path.as_deref(), &folder_names, extract_media_items)?;
+        let media_items = with_channel_messages(state, &folder_names, extract_media_items)?;
         write_media_zip(&media_items, save_path)
     })
     .await
@@ -472,11 +471,11 @@ fn write_media_zip(
 
         if let Some(data) = bytes {
             use std::io::Write;
-            if zip_writer.start_file(&entry_name, options).is_ok() {
-                if zip_writer.write_all(&data).is_ok() {
+            if zip_writer.start_file(&entry_name, options).is_ok()
+                && zip_writer.write_all(&data).is_ok()
+            {
                     downloaded_count += 1;
                 }
-            }
         }
     }
 
