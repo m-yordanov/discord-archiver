@@ -17,6 +17,7 @@ import {
   clearRecentPackages,
 } from './recentPackages';
 import { SettingsModal } from './components/SettingsModal';
+import { CrashPanel, ErrorBoundary } from './components/ErrorBoundary';
 import { loadSettings } from './settings';
 
 type View = 'messages' | 'stats';
@@ -311,24 +312,36 @@ export default function App() {
             view={view}
             onSelectView={setView}
           />
-          {view === 'stats' ? (
-            <StatsView
-              stats={stats}
-              loading={statsLoading}
-              error={statsError}
-              onOpenChannel={handleOpenChannelFromStats}
-            />
-          ) : (
-            <ChatView
-              selectedChannel={selectedChannel}
-              dataPath={dataPath}
-              userMap={dataIndex.user_map}
-              onOpenDmByUserId={handleOpenDmByUserId}
-              onOpenChannelById={handleOpenChannelById}
-              onOpenSettings={() => setIsSettingsOpen(true)}
-              jumpTarget={jumpTarget}
-            />
-          )}
+          <ErrorBoundary
+            resetKey={`${view}:${selectedChannel?.id ?? ''}`}
+            fallback={(error, reset) => (
+              <CrashPanel
+                title={view === 'stats' ? 'Insights could not be displayed' : 'This conversation could not be displayed'}
+                error={error}
+                actionLabel="Try again"
+                onAction={reset}
+              />
+            )}
+          >
+            {view === 'stats' ? (
+              <StatsView
+                stats={stats}
+                loading={statsLoading}
+                error={statsError}
+                onOpenChannel={handleOpenChannelFromStats}
+              />
+            ) : (
+              <ChatView
+                selectedChannel={selectedChannel}
+                dataPath={dataPath}
+                userMap={dataIndex.user_map}
+                onOpenDmByUserId={handleOpenDmByUserId}
+                onOpenChannelById={handleOpenChannelById}
+                onOpenSettings={() => setIsSettingsOpen(true)}
+                jumpTarget={jumpTarget}
+              />
+            )}
+          </ErrorBoundary>
         </div>
       )}
 

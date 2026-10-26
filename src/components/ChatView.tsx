@@ -13,6 +13,7 @@ import { BackendFilter, EMPTY_FILTERS, MessageFilters, countActiveFilters, toBac
 import { isAudio } from '../attachments';
 import { Download, Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
 import { MediaGallery } from './MediaGallery';
+import { ErrorBoundary } from './ErrorBoundary';
 import { useSettings } from '../settings';
 
 const PAGE_SIZE = 500;
@@ -890,26 +891,41 @@ export function ChatView({
                         </div>
                       )
                     )}
-                    <MessageItem
-                      message={msg}
-                      showHeader={shouldShowHeader(msg, prevMsg)}
-                      searchQuery={searchQuery}
-                      isCurrentMatch={currentMatchedMessageId === msg.id}
-                      isHighlighted={highlightedMessageId === msg.id}
-                      referencedMessage={msg.message_reference ? messageMap.get(msg.message_reference.message_id) : undefined}
-                      selectedChannel={selectedChannel}
-                      userMap={userMap}
-                      onImageClick={setSelectedImage}
-                      onContextMenu={handleMessageContextMenu}
-                      onMentionClick={handleMentionClick}
-                      onMentionContextMenu={handleMentionContextMenu}
-                      onChannelClick={handleChannelClick}
-                      onChannelContextMenu={handleChannelContextMenu}
-                      onLinkContextMenu={handleLinkContextMenu}
-                      onJumpToMessage={handleJumpToMessage}
-                      onReplyContextMenu={handleReplyContextMenu}
-                      timeFormat={timeFormat}
-                    />
+                    <ErrorBoundary
+                      resetKey={msg}
+                      fallback={() => (
+                        <div
+                          className="px-4 py-1 text-xs italic text-dc-text-muted"
+                          onContextMenu={e => {
+                            e.preventDefault();
+                            handleMessageContextMenu(e, msg);
+                          }}
+                        >
+                          This message could not be displayed ({msg.id})
+                        </div>
+                      )}
+                    >
+                      <MessageItem
+                        message={msg}
+                        showHeader={shouldShowHeader(msg, prevMsg)}
+                        searchQuery={searchQuery}
+                        isCurrentMatch={currentMatchedMessageId === msg.id}
+                        isHighlighted={highlightedMessageId === msg.id}
+                        referencedMessage={msg.message_reference ? messageMap.get(msg.message_reference.message_id) : undefined}
+                        selectedChannel={selectedChannel}
+                        userMap={userMap}
+                        onImageClick={setSelectedImage}
+                        onContextMenu={handleMessageContextMenu}
+                        onMentionClick={handleMentionClick}
+                        onMentionContextMenu={handleMentionContextMenu}
+                        onChannelClick={handleChannelClick}
+                        onChannelContextMenu={handleChannelContextMenu}
+                        onLinkContextMenu={handleLinkContextMenu}
+                        onJumpToMessage={handleJumpToMessage}
+                        onReplyContextMenu={handleReplyContextMenu}
+                        timeFormat={timeFormat}
+                      />
+                    </ErrorBoundary>
                     {isLastItem && hasMoreNewer && (
                       <div className="flex justify-center pt-4 pb-2">
                         <LoadMoreButton
