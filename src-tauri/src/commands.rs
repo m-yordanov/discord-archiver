@@ -10,7 +10,8 @@ use crate::export::{self, ExportResult};
 use crate::media::{is_audio, is_image, is_other_file, is_video};
 use crate::parser;
 use crate::search::{self, GlobalSearchResponse, SearchChannel, SearchCorpus};
-use crate::stats::PackageStats;
+use crate::stats::{epoch_seconds, PackageStats};
+use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
 pub struct CachedChannel {
@@ -108,21 +109,21 @@ pub async fn close_package(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn get_messages(
     folder_names: Vec<String>,
-    page: Option<usize>,
-    page_size: Option<usize>,
     offset: Option<usize>,
     limit: Option<usize>,
+    filter: Option<MessageFilter>,
     app: AppHandle,
 ) -> Result<MessagesResponse, String> {
     run_blocking(app, move |state| {
         with_channel_messages(state, &folder_names, |messages| {
-            parser::slice_messages(
-                messages,
-                offset,
-                limit,
-                page.unwrap_or(0),
-                page_size.unwrap_or(0),
-            )
+            match filter.filter(MessageFilter::is_active) {
+                Some(filter) => {
+                    let matching: Vec<&Message> =
+                        messages.iter().filter(|m| filter.matches(m)).collect();
+                    parser::slice_messages(&matching, offset, limit, 0, 0)
+                }
+                None => parser::slice_messages(messages, offset, limit, 0, 0),
+            }
         })
     })
     .await
@@ -183,63 +184,44 @@ pub async fn get_stats(app: AppHandle) -> Result<PackageStats, String> {
     .await
 }
 
-fn matches_attachment(msg: &Message, mode: Option<&str>) -> bool {
-    match mode {
-        Some("has") => !msg.attachments.is_empty(),
-        Some("none") => msg.attachments.is_empty(),
-        Some("images") => msg.attachments.iter().any(|a| is_image(a)),
-        Some("videos") => msg.attachments.iter().any(|a| is_video(a)),
-        Some("audio") => {
-            msg.attachments.iter().any(|a| is_audio(a)) || msg.message_type == "VOICE_MESSAGE"
-        }
-        Some("files") => msg.attachments.iter().any(|a| is_other_file(a)),
-        _ => true,
-    }
+#[derive(Deserialize, Default)]
+pub struct MessageFilter {
+    since: Option<i64>,
+    until: Option<i64>,
+    attachment: Option<String>,
 }
 
-fn matches_date(
-    timestamp: &str,
-    mode: Option<&str>,
-    from: Option<&str>,
-    to: Option<&str>,
-) -> bool {
-    let mode = mode.unwrap_or("any");
-    if mode == "any" {
-        return true;
+impl MessageFilter {
+    fn is_active(&self) -> bool {
+        self.since.is_some() || self.until.is_some() || self.attachment.is_some()
     }
 
-    let ts = timestamp.replace(' ', "T");
-    let ts_prefix = if ts.len() >= 10 { &ts[..10] } else { &ts };
+    fn matches(&self, msg: &Message) -> bool {
+        self.matches_date(&msg.timestamp) && self.matches_attachment(msg)
+    }
 
-    match mode {
-        "before" => {
-            if let Some(f) = from {
-                if !f.is_empty() {
-                    return ts_prefix <= f;
-                }
+    fn matches_date(&self, timestamp: &str) -> bool {
+        if self.since.is_none() && self.until.is_none() {
+            return true;
+        }
+        epoch_seconds(timestamp).is_some_and(|seconds| {
+            self.since.is_none_or(|since| seconds >= since)
+                && self.until.is_none_or(|until| seconds <= until)
+        })
+    }
+
+    fn matches_attachment(&self, msg: &Message) -> bool {
+        match self.attachment.as_deref() {
+            Some("has") => !msg.attachments.is_empty(),
+            Some("none") => msg.attachments.is_empty(),
+            Some("images") => msg.attachments.iter().any(|a| is_image(a)),
+            Some("videos") => msg.attachments.iter().any(|a| is_video(a)),
+            Some("audio") => {
+                msg.attachments.iter().any(|a| is_audio(a)) || msg.message_type == "VOICE_MESSAGE"
             }
-            true
+            Some("files") => msg.attachments.iter().any(|a| is_other_file(a)),
+            _ => true,
         }
-        "after" => {
-            if let Some(f) = from {
-                if !f.is_empty() {
-                    return ts_prefix >= f;
-                }
-            }
-            true
-        }
-        "between" => {
-            let ok_from = match from {
-                Some(f) if !f.is_empty() => ts_prefix >= f,
-                _ => true,
-            };
-            let ok_to = match to {
-                Some(t) if !t.is_empty() => ts_prefix <= t,
-                _ => true,
-            };
-            ok_from && ok_to
-        }
-        _ => true,
     }
 }
 
@@ -247,24 +229,13 @@ fn matches_date(
 pub async fn search_channel_messages(
     folder_names: Vec<String>,
     query: String,
-    date_mode: Option<String>,
-    date_from: Option<String>,
-    date_to: Option<String>,
-    attachment_mode: Option<String>,
+    filter: Option<MessageFilter>,
     limit: Option<usize>,
     app: AppHandle,
 ) -> Result<SearchResponse, String> {
     run_blocking(app, move |state| {
         with_channel_messages(state, &folder_names, |messages| {
-            search_messages(
-                messages,
-                &query,
-                date_mode.as_deref(),
-                date_from.as_deref(),
-                date_to.as_deref(),
-                attachment_mode.as_deref(),
-                limit,
-            )
+            search_messages(messages, &query, &filter.unwrap_or_default(), limit)
         })
     })
     .await
@@ -273,24 +244,13 @@ pub async fn search_channel_messages(
 fn search_messages(
     messages: &[Message],
     query: &str,
-    d_mode: Option<&str>,
-    d_from: Option<&str>,
-    d_to: Option<&str>,
-    a_mode: Option<&str>,
+    filter: &MessageFilter,
     limit: Option<usize>,
 ) -> SearchResponse {
     let q = query.trim().to_lowercase();
     let mut matches = Vec::new();
 
-    for (idx, msg) in messages.iter().enumerate() {
-        if !matches_attachment(msg, a_mode) {
-            continue;
-        }
-
-        if !matches_date(&msg.timestamp, d_mode, d_from, d_to) {
-            continue;
-        }
-
+    for (idx, msg) in messages.iter().filter(|m| filter.matches(m)).enumerate() {
         let is_query_match = if q.is_empty() {
             true
         } else {
@@ -594,23 +554,12 @@ pub fn open_cache_folder(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_matches_date_logic() {
-        assert!(matches_date("2023-05-15 12:00:00", Some("before"), Some("2023-05-16"), None));
-        assert!(!matches_date("2023-05-17 12:00:00", Some("before"), Some("2023-05-16"), None));
-        assert!(matches_date("2023-05-17 12:00:00", Some("after"), Some("2023-05-16"), None));
-        assert!(!matches_date("2023-05-15 12:00:00", Some("after"), Some("2023-05-16"), None));
-        assert!(matches_date("2023-05-16 12:00:00", Some("between"), Some("2023-05-10"), Some("2023-05-20")));
-        assert!(!matches_date("2023-05-25 12:00:00", Some("between"), Some("2023-05-10"), Some("2023-05-20")));
-    }
-
-    #[test]
-    fn test_matches_attachment_logic() {
-        let msg_none = Message {
-            id: "1".into(),
-            timestamp: "2023-01-01".into(),
+    fn message(id: &str, timestamp: &str, attachments: &[&str]) -> Message {
+        Message {
+            id: id.into(),
+            timestamp: timestamp.into(),
             contents: "hi".into(),
-            attachments: vec![],
+            attachments: attachments.iter().map(|a| a.to_string()).collect(),
             stickers: vec![],
             embeds: vec![],
             call_info: None,
@@ -618,28 +567,75 @@ mod tests {
             author: "user".into(),
             author_id: None,
             message_reference: None,
-        };
-        let msg_img = Message {
-            attachments: vec!["photo.png".into()],
-            ..msg_none.clone()
-        };
-        let msg_vid = Message {
-            attachments: vec!["video.mp4".into()],
-            ..msg_none.clone()
-        };
-        let msg_audio = Message {
-            attachments: vec!["voice-message.ogg".into()],
-            ..msg_none.clone()
-        };
+        }
+    }
 
-        assert!(matches_attachment(&msg_none, Some("none")));
-        assert!(!matches_attachment(&msg_img, Some("none")));
-        assert!(matches_attachment(&msg_img, Some("has")));
-        assert!(matches_attachment(&msg_img, Some("images")));
-        assert!(!matches_attachment(&msg_img, Some("videos")));
-        assert!(matches_attachment(&msg_vid, Some("videos")));
-        assert!(!matches_attachment(&msg_img, Some("audio")));
-        assert!(matches_attachment(&msg_audio, Some("audio")));
+    fn attachment_filter(mode: &str) -> MessageFilter {
+        MessageFilter {
+            attachment: Some(mode.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn date_bounds_are_inclusive_instants() {
+        let since = epoch_seconds("2023-05-15T22:00:00Z");
+        let until = epoch_seconds("2023-05-16T21:59:59Z");
+        let filter = MessageFilter { since, until, attachment: None };
+
+        assert!(filter.matches_date("2023-05-15T22:00:00.000+00:00"));
+        assert!(filter.matches_date("2023-05-16T00:30:00.000+02:00"));
+        assert!(filter.matches_date("2023-05-16 21:59:59"));
+        assert!(!filter.matches_date("2023-05-15T21:59:59.000+00:00"));
+        assert!(!filter.matches_date("2023-05-16T22:00:00.000+00:00"));
+        assert!(!filter.matches_date("not a timestamp"));
+        assert!(MessageFilter::default().matches_date("not a timestamp"));
+    }
+
+    #[test]
+    fn test_matches_attachment_logic() {
+        let msg_none = message("1", "2023-01-01", &[]);
+        let msg_img = message("2", "2023-01-01", &["photo.png"]);
+        let msg_vid = message("3", "2023-01-01", &["video.mp4"]);
+        let msg_audio = message("4", "2023-01-01", &["voice-message.ogg"]);
+
+        assert!(attachment_filter("none").matches(&msg_none));
+        assert!(!attachment_filter("none").matches(&msg_img));
+        assert!(attachment_filter("has").matches(&msg_img));
+        assert!(attachment_filter("images").matches(&msg_img));
+        assert!(!attachment_filter("videos").matches(&msg_img));
+        assert!(attachment_filter("videos").matches(&msg_vid));
+        assert!(!attachment_filter("audio").matches(&msg_img));
+        assert!(attachment_filter("audio").matches(&msg_audio));
+    }
+
+    #[test]
+    fn filtered_search_positions_match_the_filtered_pages() {
+        let messages = vec![
+            message("a", "2023-01-01T10:00:00Z", &["one.png"]),
+            message("b", "2023-01-02T10:00:00Z", &[]),
+            message("c", "2023-01-03T10:00:00Z", &["two.png"]),
+            message("d", "2023-01-04T10:00:00Z", &[]),
+            message("e", "2023-01-05T10:00:00Z", &["three.png"]),
+        ];
+        let filter = attachment_filter("images");
+
+        let found = search_messages(&messages, "", &filter, None);
+        let positions: Vec<(&str, usize)> = found
+            .matches
+            .iter()
+            .map(|m| (m.message.id.as_str(), m.total_index))
+            .collect();
+        assert_eq!(positions, vec![("a", 0), ("c", 1), ("e", 2)]);
+
+        let matching: Vec<&Message> = messages.iter().filter(|m| filter.matches(m)).collect();
+        let page = parser::slice_messages(&matching, Some(1), Some(1), 0, 0);
+        assert_eq!(page.total, 3);
+        assert_eq!(page.messages[0].id, "c");
+
+        let unfiltered = search_messages(&messages, "", &MessageFilter::default(), None);
+        assert_eq!(unfiltered.matches[2].total_index, 2);
+        assert_eq!(unfiltered.matches[2].message.id, "c");
     }
 
     #[test]

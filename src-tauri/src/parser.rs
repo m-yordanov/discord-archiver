@@ -4,7 +4,7 @@ use crate::models::*;
 use crate::stats::{self, PackageStats};
 use serde::de::IgnoredAny;
 use serde::Deserialize;
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 
 const GUILD_CHANNEL_TYPES: [&str; 4] = [
@@ -734,8 +734,8 @@ pub fn parse_channel_messages(
         .collect()
 }
 
-pub fn slice_messages(
-    all_messages: &[Message],
+pub fn slice_messages<M: Borrow<Message>>(
+    all_messages: &[M],
     offset: Option<usize>,
     limit: Option<usize>,
     page: usize,
@@ -767,7 +767,7 @@ pub fn slice_messages(
         .iter()
         .skip(skip)
         .take(take)
-        .cloned()
+        .map(|m| m.borrow().clone())
         .collect();
 
     MessagesResponse { messages, total }

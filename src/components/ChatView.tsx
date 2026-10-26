@@ -9,7 +9,7 @@ import { ImageModal } from './ImageModal';
 import { JsonModal } from './JsonModal';
 import { ContextMenu, ContextMenuItem } from './ContextMenu';
 import { SearchFilters } from './SearchFilters';
-import { EMPTY_FILTERS, MessageFilters, applyFilters, countActiveFilters } from '../filters';
+import { BackendFilter, EMPTY_FILTERS, MessageFilters, countActiveFilters, toBackendFilter } from '../filters';
 import { isAudio } from '../attachments';
 import { Download, Image as ImageIcon, Settings as SettingsIcon } from 'lucide-react';
 import { MediaGallery } from './MediaGallery';
@@ -113,6 +113,21 @@ export function ChatView({
   const jumpTargetRef = useRef(jumpTarget);
   jumpTargetRef.current = jumpTarget;
   const handledJumpRef = useRef<number | null>(null);
+  const pendingJumpRef = useRef<{ messageId: string; totalIndex: number } | null>(null);
+  const loadedChannelRef = useRef<ChannelInfo | null>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  const backendFilter = useMemo(() => toBackendFilter(filters), [filters]);
+  const filterKey = JSON.stringify(backendFilter);
+  const backendFilterRef = useRef(backendFilter);
+  backendFilterRef.current = backendFilter;
+  const filterKeyRef = useRef(filterKey);
+  filterKeyRef.current = filterKey;
+  const activeFilterCount = countActiveFilters(filters);
+
+  const isCurrentView = (channel: ChannelInfo, key: string) =>
+    activeChannelRef.current === channel && filterKeyRef.current === key;
 
   const searchResults = searchResponse?.matches ?? [];
   const totalSearchMatches = searchResponse?.total_matches ?? 0;
@@ -138,6 +153,7 @@ export function ChatView({
         folderNames: channel.folder_names,
         limit,
         offset,
+        filter: backendFilterRef.current,
       }),
     []
   );
@@ -152,11 +168,16 @@ export function ChatView({
   const hasMoreNewer = loadedOffset + messages.length < totalMessages;
 
   useEffect(() => {
-    setFilters(EMPTY_FILTERS);
-    setSearchResponse(null);
-    setCurrentMatchIdx(0);
-    setViewMode('chat');
-    setScrollTarget(null);
+    const channelChanged = loadedChannelRef.current !== selectedChannel;
+    loadedChannelRef.current = selectedChannel;
+    if (channelChanged) {
+      pendingJumpRef.current = null;
+      setFilters(EMPTY_FILTERS);
+      setSearchResponse(null);
+      setCurrentMatchIdx(0);
+      setViewMode('chat');
+      setScrollTarget(null);
+    }
 
     if (!selectedChannel || !dataPath) {
       setMessages([]);
@@ -166,12 +187,19 @@ export function ChatView({
       return;
     }
 
+    if (channelChanged && backendFilterRef.current) {
+      setLoading(true);
+      return;
+    }
+
     const pending = jumpTargetRef.current;
-    const jump =
+    const searchJump =
       pending && pending.channelId === selectedChannel.id && handledJumpRef.current !== pending.nonce
         ? pending
         : null;
-    if (jump) handledJumpRef.current = jump.nonce;
+    if (searchJump) handledJumpRef.current = searchJump.nonce;
+    const jump = searchJump ?? pendingJumpRef.current;
+    pendingJumpRef.current = null;
     const offset = jump ? Math.max(0, jump.totalIndex - Math.floor(PAGE_SIZE / 2)) : null;
 
     shouldScrollToBottomRef.current = !jump;
@@ -197,22 +225,23 @@ export function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [selectedChannel, dataPath]);
+  }, [selectedChannel, dataPath, filterKey]);
 
   const loadWindow = useCallback(
     async (offset: number | null, failure: string, onLoaded: () => void) => {
       if (!selectedChannel) return;
       const channel = selectedChannel;
+      const key = filterKeyRef.current;
       setLoading(true);
       try {
         const response = await fetchPage(channel, offset, PAGE_SIZE);
-        if (activeChannelRef.current !== channel) return;
+        if (!isCurrentView(channel, key)) return;
         applyWindow(response, offset);
         onLoaded();
       } catch {
-        if (activeChannelRef.current === channel) showToast(failure);
+        if (isCurrentView(channel, key)) showToast(failure);
       } finally {
-        if (activeChannelRef.current === channel) setLoading(false);
+        if (isCurrentView(channel, key)) setLoading(false);
       }
     },
     [selectedChannel, fetchPage, applyWindow, showToast]
@@ -220,14 +249,14 @@ export function ChatView({
 
   const showMessage = useCallback(
     (messageId: string, totalIndex: number, failure: string) => {
-      if (messages.some(m => m.id === messageId)) {
+      if (messagesRef.current.some(m => m.id === messageId)) {
         setScrollTarget(messageId);
         return;
       }
       const offset = Math.max(0, totalIndex - Math.floor(PAGE_SIZE / 2));
       loadWindow(offset, failure, () => setScrollTarget(messageId));
     },
-    [messages, loadWindow]
+    [loadWindow]
   );
 
   useEffect(() => {
@@ -237,6 +266,11 @@ export function ChatView({
     handledJumpRef.current = target.nonce;
 
     setViewMode('chat');
+    if (backendFilterRef.current) {
+      pendingJumpRef.current = { messageId: target.messageId, totalIndex: target.totalIndex };
+      setFilters(EMPTY_FILTERS);
+      return;
+    }
     showMessage(target.messageId, target.totalIndex, 'Could not load messages around this result');
   }, [jumpTarget]);
 
@@ -244,6 +278,7 @@ export function ChatView({
     if (loadingOlder || loading || !hasMoreOlder || !selectedChannel) return;
 
     const channel = selectedChannel;
+    const key = filterKeyRef.current;
     setLoadingOlder(true);
     const fetchLimit = Math.min(PAGE_SIZE, loadedOffset);
     const fetchOffset = loadedOffset - fetchLimit;
@@ -254,7 +289,7 @@ export function ChatView({
       const prevScrollTop = scrollEl ? scrollEl.scrollTop : 0;
 
       const response = await fetchPage(channel, fetchOffset, fetchLimit);
-      if (activeChannelRef.current !== channel) return;
+      if (!isCurrentView(channel, key)) return;
 
       setMessages(prev => [...response.messages, ...prev]);
       setLoadedOffset(fetchOffset);
@@ -267,7 +302,7 @@ export function ChatView({
         }
       });
     } catch {
-      if (activeChannelRef.current === channel) showToast('Could not load older messages');
+      if (isCurrentView(channel, key)) showToast('Could not load older messages');
     } finally {
       setLoadingOlder(false);
     }
@@ -277,17 +312,18 @@ export function ChatView({
     if (loadingNewer || loading || !hasMoreNewer || !selectedChannel) return;
 
     const channel = selectedChannel;
+    const key = filterKeyRef.current;
     setLoadingNewer(true);
     const currentEnd = loadedOffset + messages.length;
 
     try {
       const response = await fetchPage(channel, currentEnd, Math.min(PAGE_SIZE, totalMessages - currentEnd));
-      if (activeChannelRef.current !== channel) return;
+      if (!isCurrentView(channel, key)) return;
 
       setMessages(prev => [...prev, ...response.messages]);
       setTotalMessages(response.total);
     } catch {
-      if (activeChannelRef.current === channel) showToast('Could not load newer messages');
+      if (isCurrentView(channel, key)) showToast('Could not load newer messages');
     } finally {
       setLoadingNewer(false);
     }
@@ -314,9 +350,6 @@ export function ChatView({
     }
   }, [hasMoreOlder, hasMoreNewer, loadingOlder, loadingNewer, loading, loadOlderMessages, loadNewerMessages]);
 
-  const filteredMessages = useMemo(() => applyFilters(messages, filters), [messages, filters]);
-  const activeFilterCount = countActiveFilters(filters);
-
   const messageMap = useMemo(() => {
     const map = new Map<string, Message>();
     for (const m of messages) {
@@ -326,20 +359,17 @@ export function ChatView({
   }, [messages]);
 
   const virtualizer = useVirtualizer({
-    count: filteredMessages.length,
+    count: messages.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 44,
     overscan: 10,
-    getItemKey: index => filteredMessages[index]?.id ?? String(index),
+    getItemKey: index => messages[index]?.id ?? String(index),
   });
 
   useEffect(() => {
     if (!scrollTarget || loading) return;
-    const index = filteredMessages.findIndex(m => m.id === scrollTarget);
-    if (index === -1) {
-      if (activeFilterCount > 0 && messages.some(m => m.id === scrollTarget)) setFilters(EMPTY_FILTERS);
-      return;
-    }
+    const index = messages.findIndex(m => m.id === scrollTarget);
+    if (index === -1) return;
 
     setScrollTarget(null);
     virtualizer.scrollToIndex(index, { align: 'center' });
@@ -348,18 +378,18 @@ export function ChatView({
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
     highlightTimerRef.current = window.setTimeout(() => setHighlightedMessageId(null), 2000);
     return () => cancelAnimationFrame(frame);
-  }, [scrollTarget, loading, filteredMessages, messages, activeFilterCount, virtualizer]);
+  }, [scrollTarget, loading, messages, virtualizer]);
 
   useEffect(() => {
-    if (searchQuery || filteredMessages.length === 0) return;
+    if (searchQuery || messages.length === 0) return;
     if (!shouldScrollToBottomRef.current) return;
 
     shouldScrollToBottomRef.current = false;
-    const last = filteredMessages.length - 1;
+    const last = messages.length - 1;
     virtualizer.scrollToIndex(last, { align: 'end' });
     const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(last, { align: 'end' }));
     return () => cancelAnimationFrame(frame);
-  }, [filteredMessages, searchQuery, virtualizer]);
+  }, [messages, searchQuery, virtualizer]);
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -390,10 +420,7 @@ export function ChatView({
         const response: SearchResponse = await invoke('search_channel_messages', {
           folderNames: selectedChannel.folder_names,
           query: trimmed,
-          dateMode: filters.dateMode || null,
-          dateFrom: filters.dateFrom || null,
-          dateTo: filters.dateTo || null,
-          attachmentMode: filters.attachment || null,
+          filter: backendFilterRef.current,
           limit: 500,
         });
         if (cancelled) return;
@@ -418,15 +445,7 @@ export function ChatView({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [
-    searchQuery,
-    filters.dateMode,
-    filters.dateFrom,
-    filters.dateTo,
-    filters.attachment,
-    selectedChannel,
-    dataPath,
-  ]);
+  }, [searchQuery, filterKey, selectedChannel, dataPath]);
 
   const jumpToMatch = useCallback(
     (idxInMatches: number) => {
@@ -442,37 +461,52 @@ export function ChatView({
 
   const handleJumpToMessage = useCallback(
     async (messageId: string) => {
-      if (messages.some(m => m.id === messageId)) {
+      if (messagesRef.current.some(m => m.id === messageId)) {
         setScrollTarget(messageId);
         return;
       }
       if (!dataPath || !selectedChannel) return;
 
       const channel = selectedChannel;
+      const key = filterKeyRef.current;
       const failure = `Could not load referenced message (${messageId})`;
-      try {
+      const notFound = `Referenced message (${messageId}) was not found in this archive`;
+      const findPosition = async (filter: BackendFilter | null) => {
         const searchRes: SearchResponse = await invoke('search_channel_messages', {
           folderNames: channel.folder_names,
           query: messageId,
-          dateMode: null,
-          dateFrom: null,
-          dateTo: null,
-          attachmentMode: null,
+          filter,
           limit: 1,
         });
-        if (activeChannelRef.current !== channel) return;
+        return searchRes.matches.find(m => m.message.id === messageId)?.total_index ?? null;
+      };
 
-        const match = searchRes.matches.find(m => m.message.id === messageId);
-        if (!match) {
-          showToast(`Referenced message (${messageId}) was not found in this archive`);
+      try {
+        const filter = backendFilterRef.current;
+        const position = await findPosition(filter);
+        if (!isCurrentView(channel, key)) return;
+        if (position !== null) {
+          showMessage(messageId, position, failure);
           return;
         }
-        showMessage(messageId, match.total_index, failure);
+        if (!filter) {
+          showToast(notFound);
+          return;
+        }
+
+        const unfilteredPosition = await findPosition(null);
+        if (!isCurrentView(channel, key)) return;
+        if (unfilteredPosition === null) {
+          showToast(notFound);
+          return;
+        }
+        pendingJumpRef.current = { messageId, totalIndex: unfilteredPosition };
+        setFilters(EMPTY_FILTERS);
       } catch {
-        if (activeChannelRef.current === channel) showToast(failure);
+        if (isCurrentView(channel, key)) showToast(failure);
       }
     },
-    [messages, dataPath, selectedChannel, showMessage, showToast]
+    [dataPath, selectedChannel, showMessage, showToast]
   );
 
   const handleReplyContextMenu = useCallback(
@@ -666,7 +700,7 @@ export function ChatView({
           <div className="w-[1px] h-6 bg-dc-divider mr-4 shrink-0" />
           <span className="text-sm text-dc-text-muted shrink-0">
             {activeFilterCount > 0
-              ? `${filteredMessages.length.toLocaleString()} of ${messages.length.toLocaleString()} loaded messages (${totalCountDisplay.toLocaleString()} total)`
+              ? `${totalMessages.toLocaleString()} of ${selectedChannel.message_count.toLocaleString()} messages`
               : `${totalCountDisplay.toLocaleString()} messages`}
           </span>
         </div>
@@ -725,8 +759,8 @@ export function ChatView({
           <SearchFilters
             filters={filters}
             onChange={setFilters}
-            shownCount={filteredMessages.length}
-            totalCount={messages.length}
+            shownCount={totalMessages}
+            totalCount={selectedChannel.message_count}
           />
 
           <button
@@ -797,7 +831,7 @@ export function ChatView({
               <span className="text-2xl">⚠️</span>
               <span className="text-sm">{loadError}</span>
             </div>
-          ) : filteredMessages.length === 0 ? (
+          ) : messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-dc-text-muted">
               <span className="text-2xl">🔍</span>
               <span className="text-sm">
@@ -816,10 +850,10 @@ export function ChatView({
           ) : (
             <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
               {virtualizer.getVirtualItems().map(item => {
-                const msg = filteredMessages[item.index];
+                const msg = messages[item.index];
                 if (!msg) return null;
-                const prevMsg = item.index > 0 ? filteredMessages[item.index - 1] : null;
-                const isLastItem = item.index === filteredMessages.length - 1;
+                const prevMsg = item.index > 0 ? messages[item.index - 1] : null;
+                const isLastItem = item.index === messages.length - 1;
                 return (
                   <div
                     key={item.key}

@@ -1,6 +1,3 @@
-import { Message } from './types';
-import { isImage, isVideo, isAudio, isOtherFile } from './attachments';
-
 export type DateMode = 'any' | 'before' | 'after' | 'between';
 export type AttachmentMode = 'any' | 'has' | 'none' | 'images' | 'videos' | 'audio' | 'files';
 
@@ -11,6 +8,12 @@ export interface MessageFilters {
   attachment: AttachmentMode;
 }
 
+export interface BackendFilter {
+  since: number | null;
+  until: number | null;
+  attachment: AttachmentMode | null;
+}
+
 export const EMPTY_FILTERS: MessageFilters = {
   dateMode: 'any',
   dateFrom: '',
@@ -18,61 +21,25 @@ export const EMPTY_FILTERS: MessageFilters = {
   attachment: 'any',
 };
 
-export const parseMessageDate = (timestamp: string) => new Date(timestamp.replace(' ', 'T'));
-
-const dayBoundary = (value: string, endOfDay: boolean) => {
+const localDaySeconds = (value: string, endOfDay: boolean) => {
   if (!value) return null;
-  const parsed = new Date(`${value}T${endOfDay ? '23:59:59.999' : '00:00:00'}`);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.getTime();
-};
-
-const matchesDate = (message: Message, filters: MessageFilters) => {
-  if (filters.dateMode === 'any') return true;
-
-  const time = parseMessageDate(message.timestamp).getTime();
-  if (Number.isNaN(time)) return false;
-
-  if (filters.dateMode === 'before') {
-    const limit = dayBoundary(filters.dateFrom, true);
-    return limit === null || time <= limit;
-  }
-
-  if (filters.dateMode === 'after') {
-    const limit = dayBoundary(filters.dateFrom, false);
-    return limit === null || time >= limit;
-  }
-
-  const from = dayBoundary(filters.dateFrom, false);
-  const to = dayBoundary(filters.dateTo, true);
-  return (from === null || time >= from) && (to === null || time <= to);
-};
-
-const matchesAttachment = (message: Message, mode: AttachmentMode) => {
-  const attachments = message.attachments ?? [];
-  switch (mode) {
-    case 'has':
-      return attachments.length > 0;
-    case 'none':
-      return attachments.length === 0;
-    case 'images':
-      return attachments.some(isImage);
-    case 'videos':
-      return attachments.some(isVideo);
-    case 'audio':
-      return attachments.some(isAudio) || message.message_type === 'VOICE_MESSAGE';
-    case 'files':
-      return attachments.some(isOtherFile);
-    default:
-      return true;
-  }
+  const time = new Date(`${value}T${endOfDay ? '23:59:59' : '00:00:00'}`).getTime();
+  return Number.isNaN(time) ? null : Math.floor(time / 1000);
 };
 
 export const countActiveFilters = (filters: MessageFilters) =>
   (filters.dateMode === 'any' ? 0 : 1) + (filters.attachment === 'any' ? 0 : 1);
 
-export const applyFilters = (messages: Message[], filters: MessageFilters) => {
-  if (countActiveFilters(filters) === 0) return messages;
-  return messages.filter(
-    message => matchesDate(message, filters) && matchesAttachment(message, filters.attachment)
-  );
+export const toBackendFilter = (filters: MessageFilters): BackendFilter | null => {
+  const { dateMode, dateFrom, dateTo } = filters;
+  const since = dateMode === 'after' || dateMode === 'between' ? localDaySeconds(dateFrom, false) : null;
+  const until =
+    dateMode === 'before'
+      ? localDaySeconds(dateFrom, true)
+      : dateMode === 'between'
+      ? localDaySeconds(dateTo, true)
+      : null;
+  const attachment = filters.attachment === 'any' ? null : filters.attachment;
+
+  return since === null && until === null && attachment === null ? null : { since, until, attachment };
 };
