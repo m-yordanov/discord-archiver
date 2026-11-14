@@ -1,6 +1,8 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 use crate::archive::Source;
 use crate::models::{
     ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
@@ -13,6 +15,7 @@ use crate::search::{self, GlobalSearchResponse, SearchChannel, SearchCorpus};
 use crate::stats::{epoch_seconds, PackageStats};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
+use ureq::http::{header::LOCATION, Uri};
 
 pub struct CachedChannel {
     pub folder_names: Vec<String>,
@@ -366,6 +369,62 @@ fn sanitize_filename(name: &str) -> String {
     }
 }
 
+const MEDIA_HOST_DOMAINS: [&str; 3] = ["discordapp.com", "discordapp.net", "discord.com"];
+const MEDIA_HOSTS: [&str; 1] = ["web.archive.org"];
+const MAX_MEDIA_BYTES: u64 = 500 * 1024 * 1024;
+const MAX_MEDIA_REDIRECTS: usize = 3;
+
+fn media_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(0)
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(300)))
+        .build()
+        .into()
+}
+
+fn is_allowed_media_uri(uri: &Uri) -> bool {
+    let Some(host) = uri.host().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    uri.scheme_str() == Some("https")
+        && uri.port_u16().is_none_or(|port| port == 443)
+        && (MEDIA_HOSTS.contains(&host.as_str())
+            || MEDIA_HOST_DOMAINS.iter().any(|domain| {
+                host.strip_suffix(domain)
+                    .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.'))
+            }))
+}
+
+fn resolve_redirect(base: &Uri, location: &str) -> Option<Uri> {
+    if location.starts_with('/') {
+        format!("{}://{}{}", base.scheme_str()?, base.authority()?, location)
+            .parse()
+            .ok()
+    } else {
+        location.parse().ok()
+    }
+}
+
+fn fetch_media(agent: &ureq::Agent, url: &str) -> Option<ureq::http::Response<ureq::Body>> {
+    let mut uri: Uri = url.parse().ok()?;
+    for _ in 0..=MAX_MEDIA_REDIRECTS {
+        if !is_allowed_media_uri(&uri) {
+            return None;
+        }
+        let response = agent.get(uri.clone()).call().ok()?;
+        let status = response.status();
+        if !status.is_redirection() {
+            return status.is_success().then_some(response);
+        }
+        let location = response.headers().get(LOCATION)?.to_str().ok()?;
+        uri = resolve_redirect(&uri, location)?;
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn download_channel_media(
     folder_names: Vec<String>,
@@ -398,6 +457,7 @@ fn write_media_zip(
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
+    let agent = media_agent();
     let mut downloaded_count = 0;
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -411,31 +471,24 @@ fn write_media_zip(
         }
         seen_names.insert(entry_name.clone());
 
-        let bytes: Option<Vec<u8>> = if item.url.starts_with("http://") || item.url.starts_with("https://") {
-            let res = ureq::get(&item.url).call();
-            match res {
-                Ok(mut r) => {
-                    let mut buf = Vec::new();
-                    use std::io::Read;
-                    if r.body_mut().as_reader().read_to_end(&mut buf).is_ok() {
-                        Some(buf)
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None,
-            }
-        } else {
-            fs::read(&item.url).ok()
+        let Some(mut response) = fetch_media(&agent, &item.url) else {
+            continue;
         };
+        let mut body = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_MEDIA_BYTES)
+            .reader();
 
-        if let Some(data) = bytes {
-            use std::io::Write;
-            if zip_writer.start_file(&entry_name, options).is_ok()
-                && zip_writer.write_all(&data).is_ok()
-            {
-                    downloaded_count += 1;
-                }
+        if zip_writer.start_file(&entry_name, options).is_err() {
+            continue;
+        }
+        if io::copy(&mut body, &mut zip_writer).is_ok() {
+            downloaded_count += 1;
+        } else {
+            zip_writer
+                .abort_file()
+                .map_err(|e| format!("Could not write zip entry {}: {}", entry_name, e))?;
         }
     }
 
@@ -672,6 +725,73 @@ mod tests {
     fn test_sanitize_filename() {
         assert_eq!(sanitize_filename("valid.png"), "valid.png");
         assert_eq!(sanitize_filename("bad/name:here?.jpg"), "bad_name_here_.jpg");
+    }
+
+    fn uri(value: &str) -> Uri {
+        value.parse().unwrap()
+    }
+
+    #[test]
+    fn media_downloads_are_limited_to_discord_and_archive_over_https() {
+        assert!(is_allowed_media_uri(&uri("https://cdn.discordapp.com/attachments/1/2/a.png")));
+        assert!(is_allowed_media_uri(&uri("https://media.discordapp.net/a.png?x=1")));
+        assert!(is_allowed_media_uri(&uri("https://CDN.DiscordApp.com:443/a.png")));
+        assert!(is_allowed_media_uri(&uri("https://web.archive.org/web/2020id_/a.png")));
+
+        assert!(!is_allowed_media_uri(&uri("http://cdn.discordapp.com/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://cdn.discordapp.com:8443/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://discordapp.com/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://evildiscordapp.com/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://cdn.discordapp.com.evil.com/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://127.0.0.1/a.png")));
+        assert!(!is_allowed_media_uri(&uri("https://192.168.1.1/a.png")));
+        assert!(!is_allowed_media_uri(&uri("/etc/passwd")));
+    }
+
+    #[test]
+    fn redirects_resolve_against_the_current_host() {
+        let base = uri("https://cdn.discordapp.com/attachments/a.png");
+        assert_eq!(
+            resolve_redirect(&base, "/other/b.png").unwrap(),
+            uri("https://cdn.discordapp.com/other/b.png")
+        );
+        assert_eq!(
+            resolve_redirect(&base, "//127.0.0.1/x").unwrap().host(),
+            Some("cdn.discordapp.com")
+        );
+        let absolute = resolve_redirect(&base, "http://127.0.0.1/x").unwrap();
+        assert!(!is_allowed_media_uri(&absolute));
+    }
+
+    #[test]
+    fn media_zip_never_reads_local_files_or_private_hosts() {
+        let dir = std::env::temp_dir().join("test_discord_archiver_media_zip");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret.txt");
+        fs::write(&secret, b"private").unwrap();
+        let zip_path = dir.join("media.zip");
+
+        let item = |url: &str| ChannelMediaItem {
+            url: url.into(),
+            message_id: "1".into(),
+            author: "You".into(),
+            timestamp: "2023-01-01".into(),
+            filename: "secret.txt".into(),
+            media_type: "file".into(),
+        };
+        let items = vec![
+            item(secret.to_str().unwrap()),
+            item(&format!("file:///{}", secret.display())),
+            item("http://127.0.0.1:1/secret.txt"),
+            item("https://localhost:1/secret.txt"),
+        ];
+
+        let result = write_media_zip(&items, zip_path.to_string_lossy().to_string()).unwrap();
+        assert_eq!(result.count, 0);
+        let archive = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
+        assert_eq!(archive.len(), 0);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
