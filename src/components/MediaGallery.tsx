@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal } from '../externalLinks';
 import { ArrowLeft, Download, FileText, Film, Image as ImageIcon, Music, Search } from 'lucide-react';
 import { ChannelInfo, ChannelMediaItem, DownloadResult } from '../types';
 import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
@@ -255,7 +255,7 @@ export function MediaGallery({
   const handleOpenLink = (e: React.MouseEvent, url: string) => {
     e.preventDefault();
     e.stopPropagation();
-    openUrl(url).catch(() => window.open(url, '_blank'));
+    openExternal(url);
   };
 
   const renderTile = (item: ChannelMediaItem, idx: number) => {

@@ -1,19 +1,16 @@
 import { memo } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import { Message, ChannelInfo } from '../types';
 import { isImage, isVideo, isAudio } from '../attachments';
 import { DiscordMarkdown } from './DiscordMarkdown';
 import { AudioPlayer } from './AudioPlayer';
 import { useResolvedUrl, getResolvedUrl } from '../urlResolver';
 import { TimeFormat } from '../settings';
+import { openExternal } from '../externalLinks';
 
 const handleExternalUrlClick = (e: React.MouseEvent, url: string) => {
   e.preventDefault();
   e.stopPropagation();
-  openUrl(url).catch((err) => {
-    console.error('Failed to open link:', err);
-    window.open(url, '_blank');
-  });
+  openExternal(url);
 };
 
 const AUTHOR_COLORS = [

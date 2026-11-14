@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal } from '../externalLinks';
 
 interface ImageModalProps {
   imageUrl: string | null;
@@ -44,7 +44,7 @@ export function ImageModal({ imageUrl, onClose }: ImageModalProps) {
             className="text-dc-text-link hover:underline font-medium cursor-pointer"
             onClick={(e) => {
               e.preventDefault();
-              openUrl(imageUrl).catch(() => window.open(imageUrl, '_blank'));
+              openExternal(imageUrl);
             }}
           >
             Open in Browser

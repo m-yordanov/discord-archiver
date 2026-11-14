@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal } from '../externalLinks';
 import { useResolvedUrl } from '../urlResolver';
 
 interface AudioPlayerProps {
@@ -213,7 +213,7 @@ export function AudioPlayer({
   const handleOpenExternal = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    openUrl(src).catch(() => window.open(src, '_blank'));
+    openExternal(src);
   };
 
   return (

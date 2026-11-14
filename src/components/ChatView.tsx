@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openExternal, onExternalOpenFailure } from '../externalLinks';
 import { save } from '@tauri-apps/plugin-dialog';
 import { ChannelInfo, ExportResult, Message, MessageJump, MessagesResponse, SearchResponse } from '../types';
 import { MessageItem } from './MessageItem';
@@ -144,6 +144,8 @@ export function ChatView({
     setToast({ text, success });
     setTimeout(() => setToast(null), 3000);
   }, []);
+
+  useEffect(() => onExternalOpenFailure(text => showToast(text)), [showToast]);
 
   const openMenu = useCallback((e: React.MouseEvent, items: ContextMenuItem[]) => {
     setContextMenu({ x: e.clientX, y: e.clientY, items });
@@ -635,12 +637,7 @@ export function ChatView({
         { label: 'Copy Link', value: url },
         {
           label: 'Open Link in Browser',
-          onClick: () => {
-            openUrl(url).catch(err => {
-              console.error('Failed to open link:', err);
-              window.open(url, '_blank');
-            });
-          },
+          onClick: () => openExternal(url),
         },
       ]);
     },
