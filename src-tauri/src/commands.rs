@@ -1,9 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
-use crate::archive::Source;
 use crate::models::{
     ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
     SearchResponse,
@@ -11,36 +9,12 @@ use crate::models::{
 use crate::export::{self, ExportResult};
 use crate::media::{is_audio, is_image, is_other_file, is_video};
 use crate::parser;
-use crate::search::{self, GlobalSearchResponse, SearchChannel, SearchCorpus};
+use crate::search::GlobalSearchResponse;
+use crate::session::{AppState, Session};
 use crate::stats::{epoch_seconds, PackageStats};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 use ureq::http::{header::LOCATION, Uri};
-
-pub struct CachedChannel {
-    pub folder_names: Vec<String>,
-    pub messages: Vec<Message>,
-}
-
-pub struct AppState {
-    pub source: Mutex<Option<Source>>,
-    pub channel_cache: Mutex<Option<CachedChannel>>,
-    pub stats: Mutex<Option<PackageStats>>,
-    pub search_channels: Mutex<Vec<SearchChannel>>,
-    pub search_corpus: Mutex<Option<SearchCorpus>>,
-}
-
-impl AppState {
-    pub fn new() -> Self {
-        Self {
-            source: Mutex::new(None),
-            channel_cache: Mutex::new(None),
-            stats: Mutex::new(None),
-            search_channels: Mutex::new(Vec::new()),
-            search_corpus: Mutex::new(None),
-        }
-    }
-}
 
 async fn run_blocking<T, F>(app: AppHandle, task: F) -> Result<T, String>
 where
@@ -52,45 +26,22 @@ where
         .map_err(|e| e.to_string())?
 }
 
-fn with_channel_messages<T>(
-    state: &AppState,
-    folder_names: &[String],
-    read: impl FnOnce(&[Message]) -> T,
-) -> Result<T, String> {
-    let mut cache_guard = state.channel_cache.lock().map_err(|e| e.to_string())?;
-
-    let is_cached = cache_guard
-        .as_ref()
-        .is_some_and(|c| c.folder_names == folder_names);
-
-    if !is_cached {
-        let (texts, default_user_id) = {
-            let mut source_guard = state.source.lock().map_err(|e| e.to_string())?;
-            let source = source_guard
-                .as_mut()
-                .ok_or_else(|| "No data package loaded.".to_string())?;
-            parser::read_channel_texts_from_source(source, folder_names)
-        };
-
-        let messages = parser::parse_channel_messages(&texts, default_user_id.as_ref());
-        *cache_guard = Some(CachedChannel {
-            folder_names: folder_names.to_vec(),
-            messages,
-        });
-    }
-
-    Ok(read(&cache_guard.as_ref().unwrap().messages))
+async fn run_with_session<T, F>(app: AppHandle, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&Session) -> Result<T, String> + Send + 'static,
+{
+    let session = app.state::<AppState>().session()?;
+    tauri::async_runtime::spawn_blocking(move || task(&session))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex, String> {
     run_blocking(app, move |state| {
-        let (index, source, package_stats) = parser::parse_package_source(&path)?;
-        *state.source.lock().map_err(|e| e.to_string())? = Some(source);
-        *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
-        *state.stats.lock().map_err(|e| e.to_string())? = Some(package_stats);
-        *state.search_channels.lock().map_err(|e| e.to_string())? = search::channels_of(&index);
-        *state.search_corpus.lock().map_err(|e| e.to_string())? = None;
+        let (session, index) = Session::open(&path)?;
+        state.replace(Some(session))?;
         Ok(index)
     })
     .await
@@ -98,15 +49,7 @@ pub async fn load_data_package(path: String, app: AppHandle) -> Result<DataIndex
 
 #[tauri::command]
 pub async fn close_package(app: AppHandle) -> Result<(), String> {
-    run_blocking(app, |state| {
-        *state.source.lock().map_err(|e| e.to_string())? = None;
-        *state.channel_cache.lock().map_err(|e| e.to_string())? = None;
-        *state.stats.lock().map_err(|e| e.to_string())? = None;
-        *state.search_channels.lock().map_err(|e| e.to_string())? = Vec::new();
-        *state.search_corpus.lock().map_err(|e| e.to_string())? = None;
-        Ok(())
-    })
-    .await
+    run_blocking(app, |state| state.replace(None)).await
 }
 
 #[tauri::command]
@@ -117,8 +60,8 @@ pub async fn get_messages(
     filter: Option<MessageFilter>,
     app: AppHandle,
 ) -> Result<MessagesResponse, String> {
-    run_blocking(app, move |state| {
-        with_channel_messages(state, &folder_names, |messages| {
+    run_with_session(app, move |session| {
+        session.with_channel_messages(&folder_names, |messages| {
             match filter.filter(MessageFilter::is_active) {
                 Some(filter) => {
                     let matching: Vec<&Message> =
@@ -139,21 +82,12 @@ pub async fn search_all_messages(
     limit: Option<usize>,
     app: AppHandle,
 ) -> Result<GlobalSearchResponse, String> {
-    run_blocking(app, move |state| {
-        let mut corpus = state.search_corpus.lock().map_err(|e| e.to_string())?;
-        if corpus.is_none() {
-            let channels = state.search_channels.lock().map_err(|e| e.to_string())?.clone();
-            let mut source = state.source.lock().map_err(|e| e.to_string())?;
-            let source = source
-                .as_mut()
-                .ok_or_else(|| "No data package loaded.".to_string())?;
-            *corpus = Some(SearchCorpus::build(source, channels));
-        }
-        Ok(corpus.as_ref().unwrap().search(
+    run_with_session(app, move |session| {
+        session.search_all(
             &query,
             scope.as_deref().unwrap_or("all"),
             limit.unwrap_or(200),
-        ))
+        )
     })
     .await
 }
@@ -164,27 +98,12 @@ pub async fn get_raw_message(
     message_id: String,
     app: AppHandle,
 ) -> Result<String, String> {
-    run_blocking(app, move |state| {
-        let mut guard = state.source.lock().map_err(|e| e.to_string())?;
-        let source = guard
-            .as_mut()
-            .ok_or_else(|| "No data package loaded.".to_string())?;
-        parser::load_raw_message_from_source(source, &folder_names, &message_id)
-    })
-    .await
+    run_with_session(app, move |session| session.raw_message(&folder_names, &message_id)).await
 }
 
 #[tauri::command]
 pub async fn get_stats(app: AppHandle) -> Result<PackageStats, String> {
-    run_blocking(app, |state| {
-        state
-            .stats
-            .lock()
-            .map_err(|e| e.to_string())?
-            .clone()
-            .ok_or_else(|| "No data package loaded.".to_string())
-    })
-    .await
+    run_with_session(app, |session| Ok(session.stats().clone())).await
 }
 
 #[derive(Deserialize, Default)]
@@ -236,8 +155,8 @@ pub async fn search_channel_messages(
     limit: Option<usize>,
     app: AppHandle,
 ) -> Result<SearchResponse, String> {
-    run_blocking(app, move |state| {
-        with_channel_messages(state, &folder_names, |messages| {
+    run_with_session(app, move |session| {
+        session.with_channel_messages(&folder_names, |messages| {
             search_messages(messages, &query, &filter.unwrap_or_default(), limit)
         })
     })
@@ -335,8 +254,8 @@ pub async fn export_conversation(
     save_path: String,
     app: AppHandle,
 ) -> Result<ExportResult, String> {
-    run_blocking(app, move |state| {
-        with_channel_messages(state, &folder_names, |messages| {
+    run_with_session(app, move |session| {
+        session.with_channel_messages(&folder_names, |messages| {
             export::write_export(messages, &format, &title, &save_path)
         })?
     })
@@ -348,8 +267,8 @@ pub async fn get_channel_media(
     folder_names: Vec<String>,
     app: AppHandle,
 ) -> Result<Vec<ChannelMediaItem>, String> {
-    run_blocking(app, move |state| {
-        with_channel_messages(state, &folder_names, extract_media_items)
+    run_with_session(app, move |session| {
+        session.with_channel_messages(&folder_names, extract_media_items)
     })
     .await
 }
@@ -431,8 +350,8 @@ pub async fn download_channel_media(
     save_path: String,
     app: AppHandle,
 ) -> Result<DownloadResult, String> {
-    run_blocking(app, move |state| {
-        let media_items = with_channel_messages(state, &folder_names, extract_media_items)?;
+    run_with_session(app, move |session| {
+        let media_items = session.with_channel_messages(&folder_names, extract_media_items)?;
         write_media_zip(&media_items, save_path)
     })
     .await
@@ -566,8 +485,8 @@ pub async fn clear_cache(app: AppHandle) -> Result<CacheInfo, String> {
     run_blocking(app, move |state| {
         delete_dir_contents_safe(&dir);
         crate::archive::remove_legacy_cache();
-        if let Ok(mut cache_guard) = state.channel_cache.lock() {
-            *cache_guard = None;
+        if let Ok(session) = state.session() {
+            session.clear_channel_cache();
         }
         Ok(cache_info(&dir))
     })

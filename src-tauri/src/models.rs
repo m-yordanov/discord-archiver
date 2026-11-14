@@ -13,7 +13,11 @@ pub fn id_to_string(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-pub fn parse_records<'a, T: Deserialize<'a>>(text: &'a str) -> Vec<T> {
+pub trait ChannelRecord {
+    fn timestamp(&self) -> &str;
+}
+
+fn parse_records<'a, T: Deserialize<'a>>(text: &'a str) -> Vec<T> {
     serde_json::from_str::<Vec<&'a RawValue>>(text)
         .map(|records| {
             records
@@ -22,6 +26,14 @@ pub fn parse_records<'a, T: Deserialize<'a>>(text: &'a str) -> Vec<T> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn ordered_records<'a, T: Deserialize<'a> + ChannelRecord>(
+    texts: impl IntoIterator<Item = &'a str>,
+) -> Vec<T> {
+    let mut records: Vec<T> = texts.into_iter().flat_map(parse_records).collect();
+    records.sort_by(|a, b| a.timestamp().cmp(b.timestamp()));
+    records
 }
 
 struct LenientText;
@@ -132,6 +144,12 @@ pub struct RawMessage {
     pub message_reference: Option<serde_json::Value>,
     #[serde(rename = "referenced_message", alias = "ReferencedMessage", default)]
     pub referenced_message: Option<serde_json::Value>,
+}
+
+impl ChannelRecord for RawMessage {
+    fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
 }
 
 impl RawMessage {

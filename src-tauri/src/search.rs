@@ -1,5 +1,5 @@
 use crate::archive::Source;
-use crate::models::{id_to_string, lenient_text, parse_records, DataIndex};
+use crate::models::{id_to_string, lenient_text, ordered_records, ChannelRecord, DataIndex};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
@@ -44,6 +44,12 @@ pub(crate) struct RawSearchMessage<'a> {
     timestamp: Cow<'a, str>,
     #[serde(borrow, rename = "Contents", alias = "contents", default, deserialize_with = "lenient_text")]
     contents: Option<Cow<'a, str>>,
+}
+
+impl ChannelRecord for RawSearchMessage<'_> {
+    fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
 }
 
 struct Entry {
@@ -105,11 +111,8 @@ impl SearchCorpus {
                 .filter_map(|folder| source.read_channel(folder, "messages.json"))
                 .collect();
 
-            let mut messages: Vec<RawSearchMessage> = texts
-                .iter()
-                .flat_map(|text| parse_records::<RawSearchMessage>(text))
-                .collect();
-            messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+            let messages: Vec<RawSearchMessage> =
+                ordered_records(texts.iter().map(String::as_str));
 
             for (total_index, message) in messages.into_iter().enumerate() {
                 let Some(contents) = message.contents.filter(|c| !c.trim().is_empty()) else {

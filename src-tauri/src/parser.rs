@@ -345,6 +345,12 @@ struct RawMessageSummary<'a> {
     message_type: Option<serde_json::Value>,
 }
 
+impl ChannelRecord for RawMessageSummary<'_> {
+    fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
+}
+
 #[derive(Default)]
 struct ChannelSummary {
     message_count: usize,
@@ -354,7 +360,7 @@ struct ChannelSummary {
 }
 
 fn summarise_messages(text: &str, content: &mut ContentTally) -> ChannelSummary {
-    let msgs: Vec<RawMessageSummary> = parse_records(text);
+    let msgs: Vec<RawMessageSummary> = ordered_records([text]);
 
     for msg in &msgs {
         content.add_message(
@@ -372,8 +378,8 @@ fn summarise_messages(text: &str, content: &mut ContentTally) -> ChannelSummary 
 
     ChannelSummary {
         message_count: msgs.len(),
-        first: msgs.iter().map(|m| &m.timestamp).min().map(|t| t.to_string()),
-        last: msgs.iter().map(|m| &m.timestamp).max().map(|t| t.to_string()),
+        first: msgs.first().map(|m| m.timestamp.to_string()),
+        last: msgs.last().map(|m| m.timestamp.to_string()),
         hours,
     }
 }
@@ -721,14 +727,7 @@ pub fn parse_channel_messages(
     texts: &[String],
     default_user_id: Option<&String>,
 ) -> Vec<Message> {
-    let mut raw_msgs: Vec<RawMessage> = Vec::new();
-    for text in texts {
-        raw_msgs.extend(parse_records::<RawMessage>(text));
-    }
-
-    raw_msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-    raw_msgs
+    ordered_records::<RawMessage>(texts.iter().map(String::as_str))
         .into_iter()
         .map(|r| to_message(r, default_user_id))
         .collect()
@@ -793,7 +792,7 @@ pub fn read_channel_texts_from_source(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -888,7 +887,7 @@ mod tests {
         root
     }
 
-    fn fixture() -> String {
+    pub(crate) fn fixture() -> String {
         FIXTURE.get_or_init(build_fixture).to_string_lossy().to_string()
     }
 
@@ -1246,7 +1245,35 @@ mod tests {
         assert_eq!(summary.first.as_deref(), Some("2024-04-01T10:00:00.000+00:00"));
         assert_eq!(summary.last.as_deref(), Some("2024-04-01T10:03:00.000+00:00"));
 
-        let indexed: Vec<crate::search::RawSearchMessage> = parse_records(text);
+        let indexed: Vec<crate::search::RawSearchMessage> = ordered_records([text]);
         assert_eq!(indexed.len(), messages.len());
+    }
+
+    #[test]
+    fn chat_search_and_sidebar_share_one_order() {
+        let first = r#"[
+          {"ID":"late","Timestamp":"2024-04-03T10:00:00.000+00:00","Contents":"c"},
+          {"ID":"tie-a","Timestamp":"2024-04-02T10:00:00.000+00:00","Contents":"a"},
+          {"Timestamp":"2024-04-01T09:00:00.000+00:00","Contents":"no id"}
+        ]"#;
+        let second = r#"[
+          {"ID":"tie-b","Timestamp":"2024-04-02T10:00:00.000+00:00","Contents":"b"},
+          {"ID":"early","Timestamp":"2024-04-01T10:00:00.000+00:00","Contents":"e"}
+        ]"#;
+        let texts = [first.to_string(), second.to_string()];
+
+        let chat: Vec<String> = parse_channel_messages(&texts, None)
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
+        assert_eq!(chat, vec!["early", "tie-a", "tie-b", "late"]);
+
+        let indexed: Vec<crate::search::RawSearchMessage> =
+            ordered_records(texts.iter().map(String::as_str));
+        let indexed_times: Vec<&str> = indexed.iter().map(|m| m.timestamp()).collect();
+        let summaries: Vec<RawMessageSummary> = ordered_records(texts.iter().map(String::as_str));
+        let summary_times: Vec<&str> = summaries.iter().map(|m| m.timestamp()).collect();
+        assert_eq!(indexed_times, summary_times);
+        assert_eq!(indexed_times.len(), chat.len());
     }
 }

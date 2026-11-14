@@ -7,13 +7,14 @@ mod parser;
 mod search;
 mod stats;
 mod commands;
+mod session;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     archive::remove_legacy_cache();
 
     tauri::Builder::default()
-        .manage(commands::AppState::new())
+        .manage(session::AppState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
