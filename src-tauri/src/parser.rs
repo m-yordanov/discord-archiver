@@ -5,7 +5,7 @@ use crate::stats::{self, PackageStats};
 use serde::de::IgnoredAny;
 use serde::Deserialize;
 use std::borrow::{Borrow, Cow};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 const GUILD_CHANNEL_TYPES: [&str; 4] = [
     "GUILD_TEXT",
@@ -44,74 +44,6 @@ impl Package {
             .and_then(|s| serde_json::from_str::<RawUserAccount>(&s).ok())
             .filter(|u| !u.id_string().is_empty())
     }
-}
-
-fn sticker_url(id: &str, format_type: Option<u64>) -> String {
-    let ext = if format_type == Some(4) { "gif" } else { "png" };
-    format!(
-        "https://media.discordapp.net/stickers/{}.{}?size=160&passthrough=false",
-        id, ext
-    )
-}
-
-fn parse_single_sticker(val: &serde_json::Value) -> Option<StickerItem> {
-    if let serde_json::Value::Object(map) = val {
-        let id = map.get("id").and_then(id_to_string).unwrap_or_default();
-        let format_type = map.get("format_type").and_then(|v| v.as_u64());
-        let url = match map.get("url").and_then(|v| v.as_str()) {
-            Some(u) => u.to_string(),
-            None if !id.is_empty() => sticker_url(&id, format_type),
-            None => return None,
-        };
-
-        return Some(StickerItem {
-            id,
-            name: map
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Sticker")
-                .to_string(),
-            url,
-            format_type,
-        });
-    }
-
-    let raw = id_to_string(val)?;
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-
-    let is_url = raw.starts_with("http://") || raw.starts_with("https://");
-    Some(StickerItem {
-        id: if is_url { String::new() } else { raw.to_string() },
-        name: "Sticker".to_string(),
-        url: if is_url {
-            raw.to_string()
-        } else {
-            sticker_url(raw, None)
-        },
-        format_type: None,
-    })
-}
-
-fn extract_stickers(raw: &RawMessage) -> Vec<StickerItem> {
-    let named = raw.stickers.iter().chain(raw.sticker_items.iter());
-
-    let mut items: Vec<StickerItem> = named
-        .flat_map(|val| match val {
-            serde_json::Value::Array(arr) => arr.iter().filter_map(parse_single_sticker).collect(),
-            other => parse_single_sticker(other).into_iter().collect::<Vec<_>>(),
-        })
-        .collect();
-
-    let mut seen = HashSet::new();
-    items.retain(|item| {
-        let key = if item.id.is_empty() { &item.url } else { &item.id };
-        seen.insert(key.clone())
-    });
-
-    items
 }
 
 fn nested_url(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
@@ -259,7 +191,6 @@ fn extract_message_reference(raw: &RawMessage) -> Option<MessageReference> {
 fn classify_message(
     contents: &str,
     attachments: &[String],
-    stickers: &[StickerItem],
     embeds: &[EmbedItem],
     call: Option<&CallInfo>,
     raw: &RawMessage,
@@ -314,10 +245,6 @@ fn classify_message(
         })
     {
         return "VOICE_MESSAGE".to_string();
-    }
-
-    if !stickers.is_empty() {
-        return "STICKER".to_string();
     }
 
     let has_text = !contents.trim().is_empty();
@@ -646,7 +573,6 @@ pub fn parse_package_source(
 }
 
 fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
-    let stickers = extract_stickers(&raw);
     let embeds = extract_embeds(&raw);
     let call_info = extract_call(&raw);
     let message_reference = extract_message_reference(&raw);
@@ -665,7 +591,6 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
     let message_type = classify_message(
         &contents,
         &attachments,
-        &stickers,
         &embeds,
         call_info.as_ref(),
         &raw,
@@ -684,7 +609,6 @@ fn to_message(raw: RawMessage, default_user_id: Option<&String>) -> Message {
         timestamp: raw.timestamp.clone(),
         contents,
         attachments,
-        stickers,
         embeds,
         call_info,
         message_type,

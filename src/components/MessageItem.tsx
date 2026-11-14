@@ -28,7 +28,6 @@ interface ClickableImageProps {
   wrapperClassName?: string;
   title?: string;
   onImageClick?: (url: string) => void;
-  onError?: React.ReactEventHandler<HTMLImageElement>;
 }
 
 function ClickableImage({
@@ -194,32 +193,15 @@ export const MessageItem = memo(function MessageItem({
     );
   };
 
-  const handleStickerError = (name: string) => (e: React.SyntheticEvent<HTMLImageElement>) => {
-    const target = e.currentTarget;
-    if (target.src.includes('.png?size=160')) {
-      target.src = target.src.replace('.png?size=160', '.gif?size=160');
-    } else if (target.src.includes('.gif?size=160')) {
-      target.src = target.src.replace('.gif?size=160', '.webp?size=160');
-    } else {
-      target.style.display = 'none';
-      const fallback = document.createElement('div');
-      fallback.textContent = `[Sticker: ${name}]`;
-      fallback.className =
-        'text-xs text-dc-text-muted bg-dc-dark px-2.5 py-1.5 rounded border border-dc-input inline-block';
-      target.parentElement?.appendChild(fallback);
-    }
-  };
-
   const authorColor = getAuthorColor(message.author);
 
   const hasContents = Boolean(message.contents && message.contents.trim().length > 0);
   const hasAttachments = Boolean(message.attachments && message.attachments.length > 0);
-  const hasStickers = Boolean(message.stickers && message.stickers.length > 0);
   const hasEmbeds = Boolean(message.embeds && message.embeds.length > 0);
   const isCall = message.message_type === 'CALL' || Boolean(message.call_info);
   const isPin = message.message_type === 'PIN_ADD';
   const isEmpty =
-    !hasContents && !hasAttachments && !hasStickers && !hasEmbeds && !isCall && !isPin;
+    !hasContents && !hasAttachments && !hasEmbeds && !isCall && !isPin;
 
   const hasReply = Boolean(message.message_reference);
   let replyAuthor = 'Original message';
@@ -249,8 +231,6 @@ export const MessageItem = memo(function MessageItem({
         } else {
           replySnippet = '[Attachment]';
         }
-      } else if (referencedMessage.stickers && referencedMessage.stickers.length > 0) {
-        replySnippet = `[Sticker: ${referencedMessage.stickers[0]?.name || 'Sticker'}]`;
       } else if (referencedMessage.embeds && referencedMessage.embeds.length > 0) {
         replySnippet = `[Embed: ${referencedMessage.embeds[0]?.title || 'Embed'}]`;
       } else if (referencedMessage.call_info) {
@@ -391,7 +371,7 @@ export const MessageItem = memo(function MessageItem({
         {isEmpty && (
           <div className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-dc-dark/50 rounded border border-dc-input/40 text-xs text-dc-text-muted select-none mt-0.5">
             <span className="opacity-60 text-xs">⚠️</span>
-            <span>[Content could not be retrieved]</span>
+            <span>[Content could not be retrieved from your data package]</span>
           </div>
         )}
 
@@ -529,26 +509,6 @@ export const MessageItem = memo(function MessageItem({
                       />
                     </div>
                   )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {hasStickers && (
-          <div className="mt-2 flex flex-col gap-2">
-            {message.stickers!.map((sticker, i) => {
-              const name = sticker.name || sticker.id || 'Sticker';
-              return (
-                <div key={sticker.id || i} className="inline-block">
-                  <ClickableImage
-                    src={sticker.url}
-                    alt={name}
-                    title={name}
-                    className="w-[160px] h-[160px] max-w-[160px] max-h-[160px] object-contain rounded-lg cursor-pointer hover:scale-105 transition-transform"
-                    onImageClick={onImageClick}
-                    onError={handleStickerError(name)}
-                  />
                 </div>
               );
             })}

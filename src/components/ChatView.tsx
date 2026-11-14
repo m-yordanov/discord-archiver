@@ -1036,8 +1036,6 @@ export function ChatView({
                           ? '[Voice Message]'
                           : m.attachments.length > 0
                           ? '[Attachment]'
-                          : m.stickers.length > 0
-                          ? '[Sticker]'
                           : '[Message]')}
                     </div>
                   </button>

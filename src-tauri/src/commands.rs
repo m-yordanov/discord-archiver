@@ -179,7 +179,6 @@ fn search_messages(
             msg.contents.to_lowercase().contains(&q)
                 || msg.id.contains(&q)
                 || msg.attachments.iter().any(|a| a.to_lowercase().contains(&q))
-                || msg.stickers.iter().any(|s| s.name.to_lowercase().contains(&q) || s.id.contains(&q))
                 || msg.embeds.iter().any(|e| {
                     [e.title.as_deref(), e.description.as_deref(), e.provider_name.as_deref()]
                         .into_iter()
@@ -532,7 +531,6 @@ mod tests {
             timestamp: timestamp.into(),
             contents: "hi".into(),
             attachments: attachments.iter().map(|a| a.to_string()).collect(),
-            stickers: vec![],
             embeds: vec![],
             call_info: None,
             message_type: "DEFAULT".into(),
@@ -621,7 +619,6 @@ mod tests {
                 "https://cdn.example.com/sound.mp3".into(),
                 "https://cdn.example.com/doc.pdf".into(),
             ],
-            stickers: vec![],
             embeds: vec![],
             call_info: None,
             message_type: "DEFAULT".into(),

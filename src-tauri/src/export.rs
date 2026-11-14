@@ -37,7 +37,7 @@ main{padding:8px 24px 32px;max-width:1100px}
 .reply{font-size:13px;color:#949ba4;margin-bottom:2px}
 .media img,.media video{max-width:400px;max-height:300px;border-radius:8px;display:block;margin-top:6px}
 .media audio{display:block;margin-top:6px}
-.file,.sticker,.call{font-size:13px;color:#b5bac1;margin-top:4px}
+.file,.call{font-size:13px;color:#b5bac1;margin-top:4px}
 .embed{border-left:4px solid #5865f2;background:#2b2d31;border-radius:4px;padding:8px 12px;margin-top:6px;max-width:520px}
 .embed .provider{font-size:12px;color:#949ba4}
 .embed .description{font-size:13px;white-space:pre-wrap}
@@ -130,9 +130,6 @@ fn write_text(out: &mut impl Write, messages: &[Message], title: &str) -> io::Re
 
         for url in &message.attachments {
             writeln!(out, "  Attachment: {}", url)?;
-        }
-        for sticker in &message.stickers {
-            writeln!(out, "  Sticker: {}", sticker.name)?;
         }
         for embed in &message.embeds {
             let label = embed.title.as_deref().or(embed.provider_name.as_deref()).unwrap_or("Embed");
@@ -253,15 +250,6 @@ fn write_html(out: &mut impl Write, messages: &[Message], title: &str) -> io::Re
                 write!(out, "<div class=\"file\">📎 {}</div>", link(url, name))?;
             }
         }
-        for sticker in &message.stickers {
-            write!(
-                out,
-                "<div class=\"sticker\"><img src=\"{}\" alt=\"{}\" title=\"{}\" width=\"96\" loading=\"lazy\"></div>",
-                escape_html(&sticker.url),
-                escape_html(&sticker.name),
-                escape_html(&sticker.name)
-            )?;
-        }
         for embed in &message.embeds {
             write!(out, "<div class=\"embed\">")?;
             if let Some(provider) = &embed.provider_name {
@@ -340,7 +328,6 @@ mod tests {
             timestamp: timestamp.into(),
             contents: contents.into(),
             attachments: vec![],
-            stickers: vec![],
             embeds: vec![],
             call_info: None,
             message_type: "DEFAULT".into(),

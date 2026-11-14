@@ -118,10 +118,6 @@ pub struct RawMessage {
     pub contents: Option<String>,
     #[serde(rename = "Attachments", alias = "attachments", default, deserialize_with = "lenient_owned_text")]
     pub attachments: Option<String>,
-    #[serde(rename = "Stickers", alias = "stickers", default)]
-    pub stickers: Option<serde_json::Value>,
-    #[serde(rename = "sticker_items", alias = "StickerItems", default)]
-    pub sticker_items: Option<serde_json::Value>,
     #[serde(rename = "Embeds", alias = "embeds", alias = "embed", default)]
     pub embeds: Option<serde_json::Value>,
     #[serde(rename = "Call", alias = "call", default)]
@@ -242,14 +238,6 @@ pub struct ChannelInfo {
     pub last_message_timestamp: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
-pub struct StickerItem {
-    pub id: String,
-    pub name: String,
-    pub url: String,
-    pub format_type: Option<u64>,
-}
-
 #[derive(Serialize, Clone, Default)]
 pub struct EmbedItem {
     pub title: Option<String>,
@@ -286,7 +274,6 @@ pub struct Message {
     pub timestamp: String,
     pub contents: String,
     pub attachments: Vec<String>,
-    pub stickers: Vec<StickerItem>,
     pub embeds: Vec<EmbedItem>,
     pub call_info: Option<CallInfo>,
     pub message_type: String,

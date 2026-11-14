@@ -17,13 +17,6 @@ export interface ChannelInfo {
   last_message_timestamp: string | null;
 }
 
-export interface StickerItem {
-  id: string;
-  name: string;
-  url: string;
-  format_type: number | null;
-}
-
 export interface EmbedItem {
   title: string | null;
   description: string | null;
@@ -52,7 +45,6 @@ export interface Message {
   timestamp: string;
   contents: string;
   attachments: string[];
-  stickers: StickerItem[];
   embeds: EmbedItem[];
   call_info: CallInfo | null;
   message_type: string;
