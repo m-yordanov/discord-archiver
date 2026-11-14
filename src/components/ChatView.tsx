@@ -108,6 +108,7 @@ export function ChatView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const shouldScrollToBottomRef = useRef(true);
+  const stickToBottomRef = useRef(false);
   const highlightTimerRef = useRef<number | null>(null);
   const activeChannelRef = useRef(selectedChannel);
   activeChannelRef.current = selectedChannel;
@@ -204,6 +205,7 @@ export function ChatView({
     const offset = jump ? Math.max(0, jump.totalIndex - Math.floor(PAGE_SIZE / 2)) : null;
 
     shouldScrollToBottomRef.current = !jump;
+    stickToBottomRef.current = false;
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
@@ -250,6 +252,7 @@ export function ChatView({
 
   const showMessage = useCallback(
     (messageId: string, totalIndex: number, failure: string) => {
+      stickToBottomRef.current = false;
       if (messagesRef.current.some(m => m.id === messageId)) {
         setScrollTarget(messageId);
         return;
@@ -373,6 +376,7 @@ export function ChatView({
     if (index === -1) return;
 
     setScrollTarget(null);
+    stickToBottomRef.current = false;
     virtualizer.scrollToIndex(index, { align: 'center' });
     const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: 'center' }));
     setHighlightedMessageId(scrollTarget);
@@ -386,11 +390,33 @@ export function ChatView({
     if (!shouldScrollToBottomRef.current) return;
 
     shouldScrollToBottomRef.current = false;
-    const last = messages.length - 1;
-    virtualizer.scrollToIndex(last, { align: 'end' });
-    const frame = requestAnimationFrame(() => virtualizer.scrollToIndex(last, { align: 'end' }));
-    return () => cancelAnimationFrame(frame);
+    stickToBottomRef.current = true;
+    virtualizer.scrollToIndex(messages.length - 1, { align: 'end' });
   }, [messages, searchQuery, virtualizer]);
+
+  const keepPinnedToBottom = useCallback((content: HTMLDivElement | null) => {
+    if (!content) return;
+    const observer = new ResizeObserver(() => {
+      const el = scrollRef.current;
+      if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+
+  const releaseBottomOnWheel = useCallback((e: React.WheelEvent) => {
+    if (e.deltaY < 0) stickToBottomRef.current = false;
+  }, []);
+
+  const releaseBottomOnKey = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'PageUp' || e.key === 'ArrowUp' || e.key === 'Home') {
+      stickToBottomRef.current = false;
+    }
+  }, []);
+
+  const releaseBottom = useCallback(() => {
+    stickToBottomRef.current = false;
+  }, []);
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -822,7 +848,14 @@ export function ChatView({
         />
       ) : (
         <div className="flex-1 flex min-h-0 overflow-hidden relative">
-        <div className="flex-1 overflow-y-auto p-4" ref={scrollRef} onScroll={handleScroll}>
+        <div
+          className="flex-1 overflow-y-auto p-4"
+          ref={scrollRef}
+          onScroll={handleScroll}
+          onWheel={releaseBottomOnWheel}
+          onKeyDown={releaseBottomOnKey}
+          onTouchMove={releaseBottom}
+        >
           {loading ? (
             <div className="flex items-center justify-center h-full text-dc-text-muted">
               Loading messages...
@@ -849,7 +882,11 @@ export function ChatView({
               )}
             </div>
           ) : (
-            <div className="relative w-full" style={{ height: `${virtualizer.getTotalSize()}px` }}>
+            <div
+              ref={keepPinnedToBottom}
+              className="relative w-full"
+              style={{ height: `${virtualizer.getTotalSize()}px` }}
+            >
               {virtualizer.getVirtualItems().map(item => {
                 const msg = messages[item.index];
                 if (!msg) return null;
