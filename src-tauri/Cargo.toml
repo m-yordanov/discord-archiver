@@ -26,5 +26,12 @@ serde_json = { version = "1", features = ["raw_value"] }
 zip = "2.1"
 ureq = { version = "3.4.2", features = ["json"] }
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows-core = "0.61"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "2.0", features = ["v2_38"] }
+
 [profile.dev]
 opt-level = 1

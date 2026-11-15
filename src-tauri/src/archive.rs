@@ -228,10 +228,6 @@ impl Source {
     }
 }
 
-pub fn remove_legacy_cache() {
-    let legacy = std::env::temp_dir().join("discord-archiver");
-    if legacy.is_dir() {
-        let _ = fs::remove_dir_all(legacy);
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -517,7 +517,7 @@ export function SettingsModal({
                     </div>
 
                     <p className="text-[11px] text-dc-text-muted leading-relaxed">
-                      Clearing local cache removes temporary unpacked files, decoded attachments, and network memory caches.
+                      Removes images, videos and audio the app downloaded from Discord's servers. Your settings and recent packages are kept.
                     </p>
                   </div>
                 </div>

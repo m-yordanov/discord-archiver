@@ -1,4 +1,5 @@
 mod archive;
+mod cache;
 mod media;
 mod models;
 mod content;
@@ -11,8 +12,6 @@ mod session;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    archive::remove_legacy_cache();
-
     tauri::Builder::default()
         .manage(session::AppState::default())
         .plugin(tauri_plugin_opener::init())
@@ -27,9 +26,9 @@ pub fn run() {
             commands::get_channel_media,
             commands::download_channel_media,
             commands::export_conversation,
-            commands::get_cache_info,
-            commands::clear_cache,
-            commands::open_cache_folder,
+            cache::get_cache_info,
+            cache::clear_cache,
+            cache::open_cache_folder,
             commands::get_stats
         ])
         .run(tauri::generate_context!())
