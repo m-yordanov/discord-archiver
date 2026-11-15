@@ -4,6 +4,17 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 const MESSAGES_DIR_NAMES: [&str; 3] = ["messages", "Messages", "MESSAGES"];
+const MAX_PACKAGE_FILE_BYTES: u64 = 1 << 30;
+
+fn read_capped(reader: impl Read, limit: u64) -> Option<String> {
+    let mut out = String::new();
+    let read = reader.take(limit + 1).read_to_string(&mut out).ok()?;
+    (read as u64 <= limit).then_some(out)
+}
+
+fn read_file(path: &Path) -> Option<String> {
+    read_capped(fs::File::open(path).ok()?, MAX_PACKAGE_FILE_BYTES)
+}
 
 pub enum Source {
     Dir {
@@ -133,10 +144,8 @@ impl Source {
             return None;
         };
         let position = *index.get(&name.to_lowercase())?;
-        let mut entry = archive.by_index(position).ok()?;
-        let mut out = String::new();
-        entry.read_to_string(&mut out).ok()?;
-        Some(out)
+        let entry = archive.by_index(position).ok()?;
+        read_capped(entry, MAX_PACKAGE_FILE_BYTES)
     }
 
     pub fn read_root(&mut self, dirs: &[&str], file: &str) -> Option<String> {
@@ -151,7 +160,7 @@ impl Source {
                             root.join(d).join(file)
                         }
                     })
-                    .find_map(|p| fs::read_to_string(p).ok())
+                    .find_map(|p| read_file(&p))
             }
             Source::Zip { prefix, .. } => {
                 let prefix = prefix.clone();
@@ -173,7 +182,7 @@ impl Source {
     pub fn read_messages_index(&mut self) -> Option<String> {
         match self {
             Source::Dir { messages_dir, .. } => {
-                fs::read_to_string(messages_dir.join("index.json")).ok()
+                read_file(&messages_dir.join("index.json"))
             }
             Source::Zip {
                 prefix,
@@ -189,7 +198,7 @@ impl Source {
     pub fn read_channel(&mut self, folder: &str, file: &str) -> Option<String> {
         match self {
             Source::Dir { messages_dir, .. } => {
-                fs::read_to_string(messages_dir.join(folder).join(file)).ok()
+                read_file(&messages_dir.join(folder).join(file))
             }
             Source::Zip {
                 prefix,
@@ -223,5 +232,37 @@ pub fn remove_legacy_cache() {
     let legacy = std::env::temp_dir().join("discord-archiver");
     if legacy.is_dir() {
         let _ = fs::remove_dir_all(legacy);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+
+    fn zipped(name: &str, body: &[u8]) -> zip::ZipArchive<Cursor<Vec<u8>>> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(body).unwrap();
+        zip::ZipArchive::new(Cursor::new(writer.finish().unwrap().into_inner())).unwrap()
+    }
+
+    #[test]
+    fn oversized_entries_are_refused_without_reading_past_the_cap() {
+        let body = vec![b'['; 4 * 1024 * 1024];
+        let mut archive = zipped("messages/c1/messages.json", &body);
+        assert!(archive.by_index(0).unwrap().compressed_size() < 64 * 1024);
+
+        assert!(read_capped(archive.by_index(0).unwrap(), 1024 * 1024).is_none());
+        assert_eq!(
+            read_capped(archive.by_index(0).unwrap(), body.len() as u64).map(|s| s.len()),
+            Some(body.len())
+        );
+    }
+
+    #[test]
+    fn small_files_read_normally() {
+        assert_eq!(read_capped("[]".as_bytes(), 2).as_deref(), Some("[]"));
+        assert!(read_capped("[1]".as_bytes(), 2).is_none());
+        assert!(read_capped(&[0xff, 0xfe][..], 10).is_none());
     }
 }
