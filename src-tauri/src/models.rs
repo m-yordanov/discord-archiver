@@ -308,6 +308,7 @@ pub struct SearchMatch {
 pub struct SearchResponse {
     pub matches: Vec<SearchMatch>,
     pub total_matches: usize,
+    pub offset: usize,
 }
 
 #[derive(Serialize, Clone)]

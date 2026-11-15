@@ -1,6 +1,5 @@
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 use crate::models::{
     ChannelMediaItem, DataIndex, DownloadResult, Message, MessagesResponse, SearchMatch,
@@ -152,59 +151,65 @@ pub async fn search_channel_messages(
     folder_names: Vec<String>,
     query: String,
     filter: Option<MessageFilter>,
+    offset: Option<usize>,
     limit: Option<usize>,
     app: AppHandle,
 ) -> Result<SearchResponse, String> {
     run_with_session(app, move |session| {
         session.with_channel_messages(&folder_names, |messages| {
-            search_messages(messages, &query, &filter.unwrap_or_default(), limit)
+            search_messages(messages, &query, &filter.unwrap_or_default(), offset, limit)
         })
     })
     .await
+}
+
+fn matches_query(msg: &Message, q: &str) -> bool {
+    q.is_empty()
+        || msg.contents.to_lowercase().contains(q)
+        || msg.id.contains(q)
+        || msg.attachments.iter().any(|a| a.to_lowercase().contains(q))
+        || msg.embeds.iter().any(|e| {
+            [e.title.as_deref(), e.description.as_deref(), e.provider_name.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|f| f.to_lowercase().contains(q))
+        })
 }
 
 fn search_messages(
     messages: &[Message],
     query: &str,
     filter: &MessageFilter,
+    offset: Option<usize>,
     limit: Option<usize>,
 ) -> SearchResponse {
     let q = query.trim().to_lowercase();
-    let mut matches = Vec::new();
+    let hits: Vec<(usize, &Message)> = messages
+        .iter()
+        .filter(|m| filter.matches(m))
+        .enumerate()
+        .filter(|(_, msg)| matches_query(msg, &q))
+        .collect();
 
-    for (idx, msg) in messages.iter().filter(|m| filter.matches(m)).enumerate() {
-        let is_query_match = if q.is_empty() {
-            true
-        } else {
-            msg.contents.to_lowercase().contains(&q)
-                || msg.id.contains(&q)
-                || msg.attachments.iter().any(|a| a.to_lowercase().contains(&q))
-                || msg.embeds.iter().any(|e| {
-                    [e.title.as_deref(), e.description.as_deref(), e.provider_name.as_deref()]
-                        .into_iter()
-                        .flatten()
-                        .any(|f| f.to_lowercase().contains(&q))
-                })
-        };
+    let total_matches = hits.len();
+    let limit = limit.filter(|&l| l > 0).unwrap_or(total_matches);
+    let start = offset
+        .unwrap_or_else(|| total_matches.saturating_sub(limit))
+        .min(total_matches);
 
-        if is_query_match {
-            matches.push(SearchMatch {
-                message: msg.clone(),
-                total_index: idx,
-            });
-        }
-    }
-
-    let total_matches = matches.len();
-    if let Some(lim) = limit {
-        if lim > 0 && matches.len() > lim {
-            matches.truncate(lim);
-        }
-    }
+    let matches = hits[start..]
+        .iter()
+        .take(limit)
+        .map(|&(total_index, msg)| SearchMatch {
+            message: msg.clone(),
+            total_index,
+        })
+        .collect();
 
     SearchResponse {
         matches,
         total_matches,
+        offset: start,
     }
 }
 
@@ -422,105 +427,6 @@ fn write_media_zip(
     })
 }
 
-#[derive(serde::Serialize)]
-pub struct CacheInfo {
-    pub path: String,
-    pub size_bytes: u64,
-}
-
-pub fn calculate_dir_size(path: &Path) -> u64 {
-    let mut total = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                total += calculate_dir_size(&p);
-            } else if let Ok(meta) = p.metadata() {
-                total += meta.len();
-            }
-        }
-    }
-    total
-}
-
-pub fn delete_dir_contents_safe(dir: &Path) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                delete_dir_contents_safe(&path);
-                let _ = fs::remove_dir(&path);
-            } else {
-                let _ = fs::remove_file(&path);
-            }
-        }
-    }
-}
-
-pub fn resolve_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let cache_dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    if !cache_dir.exists() {
-        let _ = fs::create_dir_all(&cache_dir);
-    }
-    Ok(cache_dir)
-}
-
-fn cache_info(dir: &Path) -> CacheInfo {
-    CacheInfo {
-        path: dir.to_string_lossy().to_string(),
-        size_bytes: calculate_dir_size(dir),
-    }
-}
-
-#[tauri::command]
-pub async fn get_cache_info(app: AppHandle) -> Result<CacheInfo, String> {
-    let dir = resolve_cache_dir(&app)?;
-    run_blocking(app, move |_| Ok(cache_info(&dir))).await
-}
-
-#[tauri::command]
-pub async fn clear_cache(app: AppHandle) -> Result<CacheInfo, String> {
-    let dir = resolve_cache_dir(&app)?;
-    run_blocking(app, move |state| {
-        delete_dir_contents_safe(&dir);
-        crate::archive::remove_legacy_cache();
-        if let Ok(session) = state.session() {
-            session.clear_channel_cache();
-        }
-        Ok(cache_info(&dir))
-    })
-    .await
-}
-
-#[tauri::command]
-pub fn open_cache_folder(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = resolve_cache_dir(&app)?;
-
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(&dir)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(&dir)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&dir)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,7 +496,7 @@ mod tests {
         ];
         let filter = attachment_filter("images");
 
-        let found = search_messages(&messages, "", &filter, None);
+        let found = search_messages(&messages, "", &filter, Some(0), None);
         let positions: Vec<(&str, usize)> = found
             .matches
             .iter()
@@ -603,9 +509,43 @@ mod tests {
         assert_eq!(page.total, 3);
         assert_eq!(page.messages[0].id, "c");
 
-        let unfiltered = search_messages(&messages, "", &MessageFilter::default(), None);
+        let unfiltered = search_messages(&messages, "", &MessageFilter::default(), Some(0), None);
         assert_eq!(unfiltered.matches[2].total_index, 2);
         assert_eq!(unfiltered.matches[2].message.id, "c");
+    }
+
+    #[test]
+    fn search_pages_reach_every_match_and_start_at_the_newest() {
+        let messages: Vec<Message> = (0..1200)
+            .map(|i| {
+                let mut msg = message(&format!("m{i}"), &format!("2023-01-01T00:00:{i:04}Z"), &[]);
+                msg.contents = if i % 2 == 0 { "server".into() } else { "other".into() };
+                msg
+            })
+            .collect();
+        let filter = MessageFilter::default();
+
+        let newest = search_messages(&messages, "SERVER", &filter, None, Some(250));
+        assert_eq!(newest.total_matches, 600);
+        assert_eq!(newest.offset, 350);
+        assert_eq!(newest.matches.len(), 250);
+        assert_eq!(newest.matches.last().unwrap().message.id, "m1198");
+        assert_eq!(newest.matches.last().unwrap().total_index, 1198);
+
+        let oldest = search_messages(&messages, "server", &filter, Some(0), Some(250));
+        assert_eq!(oldest.offset, 0);
+        assert_eq!(oldest.matches[0].message.id, "m0");
+
+        let middle = search_messages(&messages, "server", &filter, Some(300), Some(250));
+        assert_eq!(middle.matches[0].message.id, "m600");
+        assert_eq!(middle.matches[0].total_index, 600);
+
+        let past_end = search_messages(&messages, "server", &filter, Some(5000), Some(250));
+        assert_eq!(past_end.offset, 600);
+        assert!(past_end.matches.is_empty());
+
+        let none = search_messages(&messages, "absent", &filter, None, Some(250));
+        assert_eq!((none.total_matches, none.offset, none.matches.len()), (0, 0, 0));
     }
 
     #[test]
@@ -708,22 +648,6 @@ mod tests {
         let archive = zip::ZipArchive::new(fs::File::open(&zip_path).unwrap()).unwrap();
         assert_eq!(archive.len(), 0);
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_calculate_dir_size_and_delete() {
-        let temp = std::env::temp_dir().join("test_discord_archiver_cache_test_dir");
-        let _ = fs::remove_dir_all(&temp);
-        fs::create_dir_all(&temp).unwrap();
-        let sub = temp.join("sub");
-        fs::create_dir_all(&sub).unwrap();
-        fs::write(temp.join("a.txt"), b"12345").unwrap();
-        fs::write(sub.join("b.txt"), b"1234567890").unwrap();
-
-        assert_eq!(calculate_dir_size(&temp), 15);
-        delete_dir_contents_safe(&temp);
-        assert_eq!(calculate_dir_size(&temp), 0);
-        let _ = fs::remove_dir_all(&temp);
     }
 }
 

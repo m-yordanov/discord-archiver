@@ -17,6 +17,7 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { useSettings } from '../settings';
 
 const PAGE_SIZE = 500;
+const SEARCH_PAGE_SIZE = 500;
 
 type ExportFormat = 'html' | 'text' | 'json';
 
@@ -38,6 +39,9 @@ const shouldShowHeader = (currentMsg: Message, prevMsg: Message | null) => {
 
 const SEARCH_NAV_BUTTON =
   'px-1 py-0.5 hover:bg-dc-hover rounded text-dc-text-muted hover:text-white disabled:opacity-30 cursor-pointer disabled:cursor-default';
+
+const SEARCH_PAGE_BUTTON =
+  'text-[11px] text-dc-text-link hover:underline text-center py-2 cursor-pointer';
 
 const toggleButtonClass = (active: boolean) =>
   `px-2 py-1 rounded text-xs transition-colors cursor-pointer border ${
@@ -119,6 +123,8 @@ export function ChatView({
   const loadedChannelRef = useRef<ChannelInfo | null>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const searchRequestRef = useRef(0);
+  const searchedQueryRef = useRef('');
 
   const backendFilter = useMemo(() => toBackendFilter(filters), [filters]);
   const filterKey = JSON.stringify(backendFilter);
@@ -133,6 +139,7 @@ export function ChatView({
 
   const searchResults = searchResponse?.matches ?? [];
   const totalSearchMatches = searchResponse?.total_matches ?? 0;
+  const searchOffset = searchResponse?.offset ?? 0;
 
   useEffect(() => {
     return () => {
@@ -434,6 +441,7 @@ export function ChatView({
   }, []);
 
   useEffect(() => {
+    searchRequestRef.current += 1;
     const trimmed = searchQuery.trim();
     if (!trimmed || !selectedChannel || !dataPath) {
       setSearchResponse(null);
@@ -450,15 +458,16 @@ export function ChatView({
           folderNames: selectedChannel.folder_names,
           query: trimmed,
           filter: backendFilterRef.current,
-          limit: 500,
+          offset: null,
+          limit: SEARCH_PAGE_SIZE,
         });
         if (cancelled) return;
 
+        searchedQueryRef.current = trimmed;
         setSearchResponse(response);
-        const lastIdx = response.matches.length - 1;
-        setCurrentMatchIdx(Math.max(0, lastIdx));
-        if (lastIdx >= 0) {
-          const latest = response.matches[lastIdx];
+        setCurrentMatchIdx(Math.max(0, response.total_matches - 1));
+        const latest = response.matches[response.matches.length - 1];
+        if (latest) {
           showMessage(latest.message.id, latest.total_index, 'Could not load messages around this result');
         }
       } catch {
@@ -476,16 +485,48 @@ export function ChatView({
     };
   }, [searchQuery, filterKey, selectedChannel, dataPath]);
 
-  const jumpToMatch = useCallback(
-    (idxInMatches: number) => {
-      if (searchResults.length === 0) return;
-      const boundedIdx = (idxInMatches + searchResults.length) % searchResults.length;
-      setCurrentMatchIdx(boundedIdx);
-
-      const match = searchResults[boundedIdx];
-      showMessage(match.message.id, match.total_index, 'Could not load messages around this result');
+  const loadSearchPage = useCallback(
+    async (offset: number): Promise<SearchResponse | null> => {
+      if (!selectedChannel) return null;
+      const channel = selectedChannel;
+      const key = filterKeyRef.current;
+      const request = searchRequestRef.current;
+      const isCurrentSearch = () => request === searchRequestRef.current && isCurrentView(channel, key);
+      try {
+        const page = await invoke<SearchResponse>('search_channel_messages', {
+          folderNames: channel.folder_names,
+          query: searchedQueryRef.current,
+          filter: backendFilterRef.current,
+          offset,
+          limit: SEARCH_PAGE_SIZE,
+        });
+        if (!isCurrentSearch()) return null;
+        setSearchResponse(page);
+        return page;
+      } catch {
+        if (isCurrentSearch()) showToast('Could not load more search results');
+        return null;
+      }
     },
-    [searchResults, showMessage]
+    [selectedChannel, showToast]
+  );
+
+  const jumpToMatch = useCallback(
+    async (matchIdx: number) => {
+      if (!searchResponse || searchResponse.total_matches === 0) return;
+      const total = searchResponse.total_matches;
+      const target = ((matchIdx % total) + total) % total;
+      setCurrentMatchIdx(target);
+
+      let page: SearchResponse | null = searchResponse;
+      if (!page.matches[target - page.offset]) {
+        const centred = target - Math.floor(SEARCH_PAGE_SIZE / 2);
+        page = await loadSearchPage(Math.max(0, Math.min(centred, total - SEARCH_PAGE_SIZE)));
+      }
+      const match = page?.matches[target - page.offset];
+      if (match) showMessage(match.message.id, match.total_index, 'Could not load messages around this result');
+    },
+    [searchResponse, loadSearchPage, showMessage]
   );
 
   const handleJumpToMessage = useCallback(
@@ -505,6 +546,7 @@ export function ChatView({
           folderNames: channel.folder_names,
           query: messageId,
           filter,
+          offset: 0,
           limit: 1,
         });
         return searchRes.matches.find(m => m.message.id === messageId)?.total_index ?? null;
@@ -712,7 +754,7 @@ export function ChatView({
 
   const isDMs = selectedChannel.channel_type === 'DM' || selectedChannel.channel_type === 'GROUP_DM';
   const prefix = isDMs ? '@' : '#';
-  const currentMatchedMessageId = searchResults[currentMatchIdx]?.message.id ?? null;
+  const currentMatchedMessageId = searchResults[currentMatchIdx - searchOffset]?.message.id ?? null;
   const totalCountDisplay = totalMessages > 0 ? totalMessages : selectedChannel.message_count;
 
   return (
@@ -753,7 +795,7 @@ export function ChatView({
                 <button
                   type="button"
                   onClick={() => jumpToMatch(currentMatchIdx - 1)}
-                  disabled={searchResults.length === 0}
+                  disabled={totalSearchMatches === 0}
                   title="Previous match (Shift+Enter)"
                   className={`${SEARCH_NAV_BUTTON} text-[10px]`}
                 >
@@ -762,7 +804,7 @@ export function ChatView({
                 <button
                   type="button"
                   onClick={() => jumpToMatch(currentMatchIdx + 1)}
-                  disabled={searchResults.length === 0}
+                  disabled={totalSearchMatches === 0}
                   title="Next match (Enter)"
                   className={`${SEARCH_NAV_BUTTON} text-[10px]`}
                 >
@@ -1009,8 +1051,18 @@ export function ChatView({
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1.5">
-              {searchResults.map((matchItem, matchIdx) => {
+              {searchOffset > 0 && (
+                <button
+                  type="button"
+                  onClick={() => loadSearchPage(Math.max(0, searchOffset - SEARCH_PAGE_SIZE))}
+                  className={SEARCH_PAGE_BUTTON}
+                >
+                  Load older results ({searchOffset.toLocaleString()})
+                </button>
+              )}
+              {searchResults.map((matchItem, pageIdx) => {
                 const m = matchItem.message;
+                const matchIdx = searchOffset + pageIdx;
                 const isSelected = matchIdx === currentMatchIdx;
                 return (
                   <button
@@ -1038,10 +1090,14 @@ export function ChatView({
                   </button>
                 );
               })}
-              {totalSearchMatches > searchResults.length && (
-                <div className="text-[11px] text-dc-text-muted text-center py-2">
-                  Showing first {searchResults.length}. Use ▲▼ to reach the rest.
-                </div>
+              {searchOffset + searchResults.length < totalSearchMatches && (
+                <button
+                  type="button"
+                  onClick={() => loadSearchPage(searchOffset + searchResults.length)}
+                  className={SEARCH_PAGE_BUTTON}
+                >
+                  Load newer results ({(totalSearchMatches - searchOffset - searchResults.length).toLocaleString()})
+                </button>
               )}
             </div>
           </div>

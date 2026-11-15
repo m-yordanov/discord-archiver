@@ -74,6 +74,7 @@ export interface SearchMatch {
 export interface SearchResponse {
   matches: SearchMatch[];
   total_matches: number;
+  offset: number;
 }
 
 export interface ChannelMediaItem {
